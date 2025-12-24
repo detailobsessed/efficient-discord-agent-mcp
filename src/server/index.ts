@@ -62,10 +62,32 @@ async function main() {
     process.exit(1);
   }
 
-  // Create MCP server
+  // Create MCP server with instructions for LLM
   const mcpServer = new McpServer({
     name: config.serverName,
     version: config.serverVersion,
+    instructions: `Discord MCP Server - Token-Efficient Discord Management
+
+This server provides access to 70+ Discord operations using progressive disclosure
+to minimize token usage. Instead of loading all tool definitions upfront, use these
+5 discovery tools to find and execute the operations you need:
+
+1. list_categories() - See available tool categories (messaging, moderation, etc.)
+2. list_tools(category) - See tools in a specific category
+3. search_tools(query) - Find tools by keyword
+4. get_tool_schema(toolName) - Get full parameter details for a tool
+5. execute_tool(toolName, params) - Execute any Discord tool
+
+Example workflow:
+1. list_categories() → see "messaging", "moderation", "channels", etc.
+2. list_tools("messaging") → see "send_message", "reply_to_message", etc.
+3. get_tool_schema("send_message") → see required params: channelId, content
+4. execute_tool("send_message", {channelId: "123", content: "Hello!"})
+
+Quick tips:
+- Use list_guilds to see servers the bot is in
+- Use get_server_info to get guild details including channel/role counts
+- Channel IDs are snowflakes (numeric strings), not names`,
   });
 
   // Create tool registry for progressive disclosure

@@ -32,6 +32,13 @@ export function registerMetaTools(
           }),
         ),
       },
+      annotations: {
+        title: "List Tool Categories",
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
     },
     async () => {
       const categories = registry.listCategories();
@@ -71,6 +78,13 @@ export function registerMetaTools(
             description: z.string(),
           }),
         ),
+      },
+      annotations: {
+        title: "List Tools in Category",
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
       },
     },
     async ({ category }) => {
@@ -134,6 +148,13 @@ export function registerMetaTools(
           }),
         ),
       },
+      annotations: {
+        title: "Search Tools",
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
     },
     async ({ query, limit }) => {
       const tools = registry.searchTools(
@@ -186,6 +207,13 @@ export function registerMetaTools(
         category: z.string(),
         inputSchema: z.record(z.unknown()),
         outputSchema: z.record(z.unknown()),
+      },
+      annotations: {
+        title: "Get Tool Schema",
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
       },
     },
     async ({ toolName }) => {
@@ -242,6 +270,13 @@ export function registerMetaTools(
           .record(z.unknown())
           .default({})
           .describe("Tool parameters as key-value pairs"),
+      },
+      annotations: {
+        title: "Execute Discord Tool",
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: false,
+        openWorldHint: true,
       },
     },
     async ({ toolName, params }) => {

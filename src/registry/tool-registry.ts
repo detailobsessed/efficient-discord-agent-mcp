@@ -258,99 +258,97 @@ export class ToolRegistry {
     return result;
   }
 
-  private zodToJsonSchema(zodType: ZodType): unknown {
-    // Get the Zod type description
-    const def = (zodType as any)._def;
-
-    if (!def) {
-      return { type: "unknown" };
+  private handleZodString(def: ZodDef): Record<string, unknown> {
+    const schema: Record<string, unknown> = { type: "string" };
+    for (const check of def.checks || []) {
+      if (check.kind === "max") schema.maxLength = check.value;
+      if (check.kind === "min") schema.minLength = check.value;
     }
+    return schema;
+  }
 
-    const typeName = def.typeName;
-    const description = def.description;
+  private handleZodNumber(def: ZodDef): Record<string, unknown> {
+    const schema: Record<string, unknown> = { type: "number" };
+    for (const check of def.checks || []) {
+      if (check.kind === "int") schema.type = "integer";
+      if (check.kind === "min") schema.minimum = check.value;
+      if (check.kind === "max") schema.maximum = check.value;
+    }
+    return schema;
+  }
 
-    let schema: Record<string, unknown> = {};
+  private handleZodArray(def: ZodDef): Record<string, unknown> {
+    const schema: Record<string, unknown> = { type: "array", items: this.zodToJsonSchema(def.type!) };
+    if (def.maxLength) schema.maxItems = def.maxLength.value;
+    if (def.minLength) schema.minItems = def.minLength.value;
+    return schema;
+  }
+
+  private handleZodWrapper(def: ZodDef, extraProps: Record<string, unknown>): Record<string, unknown> {
+    const schema = this.zodToJsonSchema(def.innerType!) as Record<string, unknown>;
+    return { ...schema, ...extraProps };
+  }
+
+  private zodToJsonSchema(zodType: ZodType): unknown {
+    const def = (zodType as { _def: ZodDef })._def;
+    if (!def) return { type: "unknown" };
+
+    const { typeName, description } = def;
+    let schema: Record<string, unknown>;
 
     switch (typeName) {
       case "ZodString":
-        schema = { type: "string" };
-        if (def.checks) {
-          for (const check of def.checks) {
-            if (check.kind === "max") schema.maxLength = check.value;
-            if (check.kind === "min") schema.minLength = check.value;
-          }
-        }
+        schema = this.handleZodString(def);
         break;
-
       case "ZodNumber":
-        schema = { type: "number" };
-        if (def.checks) {
-          for (const check of def.checks) {
-            if (check.kind === "int") schema.type = "integer";
-            if (check.kind === "min") schema.minimum = check.value;
-            if (check.kind === "max") schema.maximum = check.value;
-          }
-        }
+        schema = this.handleZodNumber(def);
         break;
-
       case "ZodBoolean":
         schema = { type: "boolean" };
         break;
-
       case "ZodArray":
-        schema = {
-          type: "array",
-          items: this.zodToJsonSchema(def.type),
-        };
-        if (def.maxLength) schema.maxItems = def.maxLength.value;
-        if (def.minLength) schema.minItems = def.minLength.value;
+        schema = this.handleZodArray(def);
         break;
-
       case "ZodObject":
-        schema = {
-          type: "object",
-          properties: this.serializeSchema(def.shape()),
-        };
+        schema = { type: "object", properties: this.serializeSchema(def.shape!()) };
         break;
-
       case "ZodOptional":
-        schema = this.zodToJsonSchema(def.innerType) as Record<string, unknown>;
-        schema.optional = true;
+        schema = this.handleZodWrapper(def, { optional: true });
         break;
-
       case "ZodDefault":
-        schema = this.zodToJsonSchema(def.innerType) as Record<string, unknown>;
-        schema.default = def.defaultValue();
+        schema = this.handleZodWrapper(def, { default: def.defaultValue!() });
         break;
-
       case "ZodEnum":
-        schema = {
-          type: "string",
-          enum: def.values,
-        };
+        schema = { type: "string", enum: def.values };
         break;
-
       case "ZodUnion":
-        schema = {
-          oneOf: def.options.map((opt: ZodType) => this.zodToJsonSchema(opt)),
-        };
+        schema = { oneOf: def.options!.map((opt: ZodType) => this.zodToJsonSchema(opt)) };
         break;
-
       case "ZodNullable":
-        schema = this.zodToJsonSchema(def.innerType) as Record<string, unknown>;
-        schema.nullable = true;
+        schema = this.handleZodWrapper(def, { nullable: true });
         break;
-
       default:
         schema = { type: typeName.replace("Zod", "").toLowerCase() };
     }
 
-    if (description) {
-      schema.description = description;
-    }
-
+    if (description) schema.description = description;
     return schema;
   }
+}
+
+/** Zod internal definition type */
+interface ZodDef {
+  typeName: string;
+  description?: string;
+  checks?: Array<{ kind: string; value?: unknown }>;
+  values?: unknown[];
+  innerType?: ZodType;
+  shape?: () => Record<string, ZodType>;
+  type?: ZodType;
+  defaultValue?: () => unknown;
+  options?: ZodType[];
+  minLength?: { value: number };
+  maxLength?: { value: number };
 }
 
 // Global registry instance
