@@ -1,15 +1,20 @@
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { DiscordClientManager } from "../discord/client.js";
-import { Logger } from "../utils/logger.js";
-import { z } from "zod";
 import {
-  PermissionDeniedError,
-  GuildNotFoundError,
-} from "../errors/discord.js";
-import { PermissionFlagsBits, AuditLogEvent } from "discord.js";
+  AuditLogEvent,
+  type Collection,
+  type GuildAuditLogsFetchOptions,
+  type GuildEditOptions,
+  PermissionFlagsBits,
+  type Webhook,
+} from "discord.js";
+import { z } from "zod";
+import type { DiscordClientManager } from "../discord/client.js";
+import { GuildNotFoundError, PermissionDeniedError } from "../errors/discord.js";
+import type { ToolRegistrationTarget } from "../registry/tool-adapter.js";
+import { getErrorMessage } from "../utils/errors.js";
+import type { Logger } from "../utils/logger.js";
 
 export function registerServerTools(
-  server: McpServer,
+  server: ToolRegistrationTarget,
   discordManager: DiscordClientManager,
   logger: Logger,
 ) {
@@ -67,17 +72,18 @@ export function registerServerTools(
           ],
           structuredContent: output,
         };
-      } catch (error: any) {
-        logger.error("Failed to list guilds", { error: error.message });
+      } catch (error) {
+        const errorMsg = getErrorMessage(error);
+        logger.error("Failed to list guilds", { error: errorMsg });
 
         return {
           content: [
             {
               type: "text" as const,
-              text: `Failed to list guilds: ${error.message}`,
+              text: `Failed to list guilds: ${errorMsg}`,
             },
           ],
-          structuredContent: { success: false, error: error.message },
+          structuredContent: { success: false, error: errorMsg },
           isError: true,
         };
       }
@@ -166,9 +172,10 @@ export function registerServerTools(
           ],
           structuredContent: output,
         };
-      } catch (error: any) {
+      } catch (error) {
+        const errorMsg = getErrorMessage(error);
         logger.error("Failed to get server info", {
-          error: error.message,
+          error: errorMsg,
           guildId,
         });
 
@@ -176,10 +183,10 @@ export function registerServerTools(
           content: [
             {
               type: "text" as const,
-              text: `Failed to get server info: ${error.message}`,
+              text: `Failed to get server info: ${errorMsg}`,
             },
           ],
-          structuredContent: { success: false, error: error.message },
+          structuredContent: { success: false, error: errorMsg },
           isError: true,
         };
       }
@@ -195,15 +202,8 @@ export function registerServerTools(
       inputSchema: {
         guildId: z.string().describe("Guild ID"),
         name: z.string().min(2).max(100).optional().describe("New server name"),
-        description: z
-          .string()
-          .max(120)
-          .optional()
-          .describe("New server description"),
-        reason: z
-          .string()
-          .optional()
-          .describe("Reason for modification (audit log)"),
+        description: z.string().max(120).optional().describe("New server description"),
+        reason: z.string().optional().describe("Reason for modification (audit log)"),
       },
       outputSchema: {
         success: z.boolean(),
@@ -231,7 +231,7 @@ export function registerServerTools(
           throw new PermissionDeniedError("ManageGuild", guildId);
         }
 
-        const updateOptions: any = {};
+        const updateOptions: GuildEditOptions = {};
         if (name !== undefined) updateOptions.name = name;
         if (description !== undefined) updateOptions.description = description;
         if (reason !== undefined) updateOptions.reason = reason;
@@ -258,25 +258,21 @@ export function registerServerTools(
           ],
           structuredContent: output,
         };
-      } catch (error: any) {
+      } catch (error) {
+        const errorMsg = getErrorMessage(error);
         logger.error("Failed to modify server", {
-          error: error.message,
+          error: errorMsg,
           guildId,
         });
-
-        const output = {
-          success: false,
-          error: error.message,
-        };
 
         return {
           content: [
             {
               type: "text" as const,
-              text: `Failed to modify server: ${error.message}`,
+              text: `Failed to modify server: ${errorMsg}`,
             },
           ],
-          structuredContent: output,
+          structuredContent: { success: false, error: errorMsg },
           isError: true,
         };
       }
@@ -299,10 +295,7 @@ export function registerServerTools(
           .optional()
           .default(50)
           .describe("Number of entries to retrieve (max 100)"),
-        userId: z
-          .string()
-          .optional()
-          .describe("Filter by user who performed actions"),
+        userId: z.string().optional().describe("Filter by user who performed actions"),
         actionType: z
           .enum([
             "ALL",
@@ -357,7 +350,7 @@ export function registerServerTools(
           throw new PermissionDeniedError("ViewAuditLog", guildId);
         }
 
-        const fetchOptions: any = { limit };
+        const fetchOptions: GuildAuditLogsFetchOptions<AuditLogEvent> = { limit };
         if (userId) fetchOptions.user = userId;
         if (actionType !== "ALL") {
           const actionMap: Record<string, AuditLogEvent> = {
@@ -410,25 +403,21 @@ export function registerServerTools(
           ],
           structuredContent: output,
         };
-      } catch (error: any) {
+      } catch (error) {
+        const errorMsg = getErrorMessage(error);
         logger.error("Failed to get audit logs", {
-          error: error.message,
+          error: errorMsg,
           guildId,
         });
-
-        const output = {
-          success: false,
-          error: error.message,
-        };
 
         return {
           content: [
             {
               type: "text" as const,
-              text: `Failed to get audit logs: ${error.message}`,
+              text: `Failed to get audit logs: ${errorMsg}`,
             },
           ],
-          structuredContent: output,
+          structuredContent: { success: false, error: errorMsg },
           isError: true,
         };
       }
@@ -443,10 +432,7 @@ export function registerServerTools(
       description: "Get all webhooks in the server or a specific channel",
       inputSchema: {
         guildId: z.string().describe("Guild ID"),
-        channelId: z
-          .string()
-          .optional()
-          .describe("Filter by channel ID (optional)"),
+        channelId: z.string().optional().describe("Filter by channel ID (optional)"),
       },
       outputSchema: {
         success: z.boolean(),
@@ -479,13 +465,11 @@ export function registerServerTools(
           throw new PermissionDeniedError("ManageWebhooks", guildId);
         }
 
-        let webhooks;
+        let webhooks: Collection<string, Webhook>;
         if (channelId) {
           const channel = await guild.channels.fetch(channelId);
           if (!channel || !("fetchWebhooks" in channel)) {
-            throw new Error(
-              "Invalid channel or channel doesn't support webhooks",
-            );
+            throw new Error("Invalid channel or channel doesn't support webhooks");
           }
           webhooks = await channel.fetchWebhooks();
         } else {
@@ -517,25 +501,21 @@ export function registerServerTools(
           ],
           structuredContent: output,
         };
-      } catch (error: any) {
+      } catch (error) {
+        const errorMsg = getErrorMessage(error);
         logger.error("Failed to list webhooks", {
-          error: error.message,
+          error: errorMsg,
           guildId,
         });
-
-        const output = {
-          success: false,
-          error: error.message,
-        };
 
         return {
           content: [
             {
               type: "text" as const,
-              text: `Failed to list webhooks: ${error.message}`,
+              text: `Failed to list webhooks: ${errorMsg}`,
             },
           ],
-          structuredContent: output,
+          structuredContent: { success: false, error: errorMsg },
           isError: true,
         };
       }
@@ -551,10 +531,7 @@ export function registerServerTools(
       inputSchema: {
         channelId: z.string().describe("Channel ID"),
         name: z.string().min(1).max(80).describe("Webhook name"),
-        reason: z
-          .string()
-          .optional()
-          .describe("Reason for creating webhook (audit log)"),
+        reason: z.string().optional().describe("Reason for creating webhook (audit log)"),
       },
       outputSchema: {
         success: z.boolean(),
@@ -573,13 +550,9 @@ export function registerServerTools(
       try {
         const client = discordManager.getClient();
 
-        const channel = await client.channels
-          .fetch(channelId)
-          .catch(() => null);
+        const channel = await client.channels.fetch(channelId).catch(() => null);
         if (!channel || !("createWebhook" in channel)) {
-          throw new Error(
-            "Invalid channel or channel doesn't support webhooks",
-          );
+          throw new Error("Invalid channel or channel doesn't support webhooks");
         }
 
         if ("guild" in channel && channel.guild) {
@@ -589,7 +562,7 @@ export function registerServerTools(
           }
         }
 
-        const webhook = await (channel as any).createWebhook({
+        const webhook = await channel.createWebhook({
           name,
           reason,
         });
@@ -615,25 +588,21 @@ export function registerServerTools(
           ],
           structuredContent: output,
         };
-      } catch (error: any) {
+      } catch (error) {
+        const errorMsg = getErrorMessage(error);
         logger.error("Failed to create webhook", {
-          error: error.message,
+          error: errorMsg,
           channelId,
         });
-
-        const output = {
-          success: false,
-          error: error.message,
-        };
 
         return {
           content: [
             {
               type: "text" as const,
-              text: `Failed to create webhook: ${error.message}`,
+              text: `Failed to create webhook: ${errorMsg}`,
             },
           ],
-          structuredContent: output,
+          structuredContent: { success: false, error: errorMsg },
           isError: true,
         };
       }
@@ -717,25 +686,21 @@ export function registerServerTools(
           ],
           structuredContent: output,
         };
-      } catch (error: any) {
+      } catch (error) {
+        const errorMsg = getErrorMessage(error);
         logger.error("Failed to get invites", {
-          error: error.message,
+          error: errorMsg,
           guildId,
         });
-
-        const output = {
-          success: false,
-          error: error.message,
-        };
 
         return {
           content: [
             {
               type: "text" as const,
-              text: `Failed to get invites: ${error.message}`,
+              text: `Failed to get invites: ${errorMsg}`,
             },
           ],
-          structuredContent: output,
+          structuredContent: { success: false, error: errorMsg },
           isError: true,
         };
       }
@@ -764,19 +729,13 @@ export function registerServerTools(
           .max(100)
           .optional()
           .describe("Max number of uses (0 = unlimited)"),
-        temporary: z
-          .boolean()
-          .optional()
-          .describe("Grant temporary membership"),
+        temporary: z.boolean().optional().describe("Grant temporary membership"),
         unique: z
           .boolean()
           .optional()
           .default(true)
           .describe("Create a unique invite (don't reuse existing)"),
-        reason: z
-          .string()
-          .optional()
-          .describe("Reason for creating invite (audit log)"),
+        reason: z.string().optional().describe("Reason for creating invite (audit log)"),
       },
       outputSchema: {
         success: z.boolean(),
@@ -791,37 +750,23 @@ export function registerServerTools(
         error: z.string().optional(),
       },
     },
-    async ({
-      channelId,
-      maxAge,
-      maxUses,
-      temporary,
-      unique = true,
-      reason,
-    }) => {
+    async ({ channelId, maxAge, maxUses, temporary, unique = true, reason }) => {
       try {
         const client = discordManager.getClient();
 
-        const channel = await client.channels
-          .fetch(channelId)
-          .catch(() => null);
+        const channel = await client.channels.fetch(channelId).catch(() => null);
         if (!channel || !("createInvite" in channel)) {
           throw new Error("Invalid channel or channel doesn't support invites");
         }
 
         if ("guild" in channel && channel.guild) {
           const botMember = await channel.guild.members.fetchMe();
-          if (
-            !botMember.permissions.has(PermissionFlagsBits.CreateInstantInvite)
-          ) {
-            throw new PermissionDeniedError(
-              "CreateInstantInvite",
-              channel.guild.id,
-            );
+          if (!botMember.permissions.has(PermissionFlagsBits.CreateInstantInvite)) {
+            throw new PermissionDeniedError("CreateInstantInvite", channel.guild.id);
           }
         }
 
-        const invite = await (channel as any).createInvite({
+        const invite = await channel.createInvite({
           maxAge,
           maxUses,
           temporary,
@@ -850,22 +795,23 @@ export function registerServerTools(
           ],
           structuredContent: output,
         };
-      } catch (error: any) {
+      } catch (error) {
+        const errorMsg = getErrorMessage(error);
         logger.error("Failed to create invite", {
-          error: error.message,
+          error: errorMsg,
           channelId,
         });
 
         const output = {
           success: false,
-          error: error.message,
+          error: errorMsg,
         };
 
         return {
           content: [
             {
               type: "text" as const,
-              text: `Failed to create invite: ${error.message}`,
+              text: `Failed to create invite: ${errorMsg}`,
             },
           ],
           structuredContent: output,

@@ -14,6 +14,8 @@ repos:
       - id: check-json
         priority: 0
         exclude: ^tsconfig\.json$
+      - id: check-toml
+        priority: 0
       - id: check-added-large-files
         priority: 0
       - id: check-merge-conflict
@@ -31,9 +33,16 @@ repos:
 
   - repo: local
     hooks:
-      - id: typescript-build
-        name: TypeScript Build
-        entry: npm run build
+      - id: biome
+        name: biome
+        entry: bunx biome check --write --no-errors-on-unmatched
+        language: system
+        types: [ts]
+        priority: 1
+
+      - id: build
+        name: Build
+        entry: bun run build
         language: system
         pass_filenames: false
         types: [ts]
@@ -41,7 +50,7 @@ repos:
 
       - id: test
         name: Run Tests
-        entry: npm test -- --run
+        entry: bun test
         language: system
         pass_filenames: false
         stages: [pre-push]

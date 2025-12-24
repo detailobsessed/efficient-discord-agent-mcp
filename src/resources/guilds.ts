@@ -1,6 +1,6 @@
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { DiscordClientManager } from "../discord/client.js";
-import { Logger } from "../utils/logger.js";
+import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import type { DiscordClientManager } from "../discord/client.js";
+import type { Logger } from "../utils/logger.js";
 
 export function registerGuildResources(
   server: McpServer,
@@ -36,7 +36,7 @@ export function registerGuildResources(
             },
           ],
         };
-      } catch (error: any) {
+      } catch (error) {
         logger.error("Failed to list guilds", { error: error.message });
         throw error;
       }

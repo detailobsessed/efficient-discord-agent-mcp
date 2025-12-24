@@ -5,22 +5,43 @@
  * to register with the ToolRegistry instead of directly with McpServer.
  */
 
-import { ZodType } from "zod";
-import { ToolRegistry, ToolHandler } from "./tool-registry.js";
+import type { ZodRawShape, z } from "zod";
+import type { ToolHandler, ToolRegistry } from "./tool-registry.js";
 
 /**
- * Creates a mock server interface that redirects tool registrations to the registry.
- * This allows existing tool files to work unchanged - they call registerTool on this
- * adapter, which forwards to the registry with the appropriate category.
+ * Tool result type matching MCP SDK expectations
  */
-export function createRegistryAdapter(
-  registry: ToolRegistry,
-  category: string,
-): RegistryAdapter {
-  return new RegistryAdapter(registry, category);
+interface ToolResult {
+  content: Array<{ type: "text"; text: string }>;
+  structuredContent?: Record<string, unknown>;
+  isError?: boolean;
 }
 
-export class RegistryAdapter {
+/**
+ * Type that makes RegistryAdapter compatible with McpServer for tool registration.
+ * Uses generics to preserve Zod type inference for handler parameters.
+ */
+export interface ToolRegistrationTarget {
+  registerTool<TInput extends ZodRawShape, TOutput extends ZodRawShape>(
+    name: string,
+    config: {
+      title: string;
+      description: string;
+      inputSchema: TInput;
+      outputSchema?: TOutput;
+      annotations?: {
+        title?: string;
+        readOnlyHint?: boolean;
+        destructiveHint?: boolean;
+        idempotentHint?: boolean;
+        openWorldHint?: boolean;
+      };
+    },
+    handler: (params: z.infer<z.ZodObject<TInput>>) => Promise<ToolResult>,
+  ): void;
+}
+
+export class RegistryAdapter implements ToolRegistrationTarget {
   constructor(
     private registry: ToolRegistry,
     private category: string,
@@ -30,15 +51,22 @@ export class RegistryAdapter {
    * Compatible with McpServer.registerTool signature.
    * Intercepts tool registrations and forwards them to the registry.
    */
-  registerTool(
+  registerTool<TInput extends ZodRawShape, TOutput extends ZodRawShape>(
     name: string,
     config: {
       title: string;
       description: string;
-      inputSchema: Record<string, ZodType>;
-      outputSchema: Record<string, ZodType>;
+      inputSchema: TInput;
+      outputSchema?: TOutput;
+      annotations?: {
+        title?: string;
+        readOnlyHint?: boolean;
+        destructiveHint?: boolean;
+        idempotentHint?: boolean;
+        openWorldHint?: boolean;
+      };
     },
-    handler: ToolHandler,
+    handler: (params: z.infer<z.ZodObject<TInput>>) => Promise<ToolResult>,
   ): void {
     this.registry.registerTool(
       name,
@@ -46,17 +74,20 @@ export class RegistryAdapter {
       config.title,
       config.description,
       config.inputSchema,
-      config.outputSchema,
-      handler,
+      config.outputSchema ?? {},
+      handler as ToolHandler,
     );
   }
 }
 
 /**
- * Type that makes RegistryAdapter compatible with McpServer for tool registration.
- * This is a duck-typed interface - as long as registerTool exists with compatible signature,
- * the existing tool files will work.
+ * Creates a mock server interface that redirects tool registrations to the registry.
+ * This allows existing tool files to work unchanged - they call registerTool on this
+ * adapter, which forwards to the registry with the appropriate category.
  */
-export type ToolRegistrationTarget = {
-  registerTool: RegistryAdapter["registerTool"];
-};
+export function createRegistryAdapter(
+  registry: ToolRegistry,
+  category: string,
+): ToolRegistrationTarget {
+  return new RegistryAdapter(registry, category);
+}

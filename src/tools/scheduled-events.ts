@@ -1,16 +1,121 @@
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { DiscordClientManager } from "../discord/client.js";
-import { Logger } from "../utils/logger.js";
+import {
+  type Client,
+  type Guild,
+  type GuildMember,
+  GuildScheduledEventEntityType,
+  GuildScheduledEventPrivacyLevel,
+  GuildScheduledEventStatus,
+  PermissionFlagsBits,
+  type Role,
+} from "discord.js";
 import { z } from "zod";
-import { PermissionDeniedError, InvalidInputError } from "../errors/discord.js";
-import { validateGuildAccess } from "../utils/guild-validation.js";
-import { PermissionFlagsBits, GuildScheduledEventPrivacyLevel, GuildScheduledEventEntityType, GuildScheduledEventStatus } from "discord.js";
+import type { DiscordClientManager } from "../discord/client.js";
+import { InvalidInputError, PermissionDeniedError } from "../errors/discord.js";
+import type { ToolRegistrationTarget } from "../registry/tool-adapter.js";
+import { getErrorMessage } from "../utils/errors.js";
+import { getBotMember, validateGuildAccess } from "../utils/guild-validation.js";
+import type { Logger } from "../utils/logger.js";
 
 export function registerScheduledEventTools(
-  server: McpServer,
+  server: ToolRegistrationTarget,
   discordManager: DiscordClientManager,
   logger: Logger,
 ) {
+  async function validateEventPermissions(guild: Guild, client: Client) {
+    const botMember = await getBotMember(guild, client);
+    if (!botMember.permissions.has(PermissionFlagsBits.ManageEvents)) {
+      throw new PermissionDeniedError("ManageEvents", guild.id);
+    }
+  }
+
+  function validateAndMapEntityType(
+    entityType: string,
+    channelId?: string,
+    location?: string,
+    scheduledEndTime?: string,
+  ): GuildScheduledEventEntityType {
+    const entityTypeMap: Record<string, GuildScheduledEventEntityType> = {
+      STAGE_INSTANCE: GuildScheduledEventEntityType.StageInstance,
+      VOICE: GuildScheduledEventEntityType.Voice,
+      EXTERNAL: GuildScheduledEventEntityType.External,
+    };
+
+    if ((entityType === "STAGE_INSTANCE" || entityType === "VOICE") && !channelId) {
+      throw new InvalidInputError("channelId", "Required for STAGE_INSTANCE and VOICE events");
+    }
+
+    if (entityType === "EXTERNAL" && !location) {
+      throw new InvalidInputError("location", "Required for EXTERNAL events");
+    }
+
+    if (entityType === "EXTERNAL" && !scheduledEndTime) {
+      throw new InvalidInputError("scheduledEndTime", "Required for EXTERNAL events");
+    }
+
+    return entityTypeMap[entityType];
+  }
+
+  async function fetchAndValidateEvent(guild: Guild, eventId: string) {
+    const event = await guild.scheduledEvents.fetch(eventId);
+    if (!event) {
+      throw new InvalidInputError("eventId", "Event not found");
+    }
+    return event;
+  }
+
+  function buildUpdateOptions({
+    name,
+    description,
+    scheduledStartTime,
+    scheduledEndTime,
+    entityType,
+    channelId,
+    location,
+    status,
+    image,
+    reason,
+  }: {
+    name?: string;
+    description?: string;
+    scheduledStartTime?: string;
+    scheduledEndTime?: string;
+    entityType?: string;
+    channelId?: string;
+    location?: string;
+    status?: string;
+    image?: string;
+    reason?: string;
+  }) {
+    const entityTypeMap: Record<string, GuildScheduledEventEntityType> = {
+      STAGE_INSTANCE: GuildScheduledEventEntityType.StageInstance,
+      VOICE: GuildScheduledEventEntityType.Voice,
+      EXTERNAL: GuildScheduledEventEntityType.External,
+    };
+
+    const statusMap: Record<
+      string,
+      | GuildScheduledEventStatus.Active
+      | GuildScheduledEventStatus.Completed
+      | GuildScheduledEventStatus.Canceled
+    > = {
+      ACTIVE: GuildScheduledEventStatus.Active,
+      COMPLETED: GuildScheduledEventStatus.Completed,
+      CANCELED: GuildScheduledEventStatus.Canceled,
+    };
+
+    return {
+      name,
+      description,
+      scheduledStartTime: scheduledStartTime ? new Date(scheduledStartTime) : undefined,
+      scheduledEndTime: scheduledEndTime ? new Date(scheduledEndTime) : undefined,
+      entityType: entityType ? entityTypeMap[entityType] : undefined,
+      channel: channelId || undefined,
+      entityMetadata: location ? { location } : undefined,
+      status: status ? statusMap[status] : undefined,
+      image: image || undefined,
+      reason,
+    };
+  }
   // List Scheduled Events Tool
   server.registerTool(
     "list_scheduled_events",
@@ -89,9 +194,10 @@ export function registerScheduledEventTools(
           ],
           structuredContent: output,
         };
-      } catch (error: any) {
+      } catch (error) {
+        const errorMsg = getErrorMessage(error);
         logger.error("Failed to list scheduled events", {
-          error: error.message,
+          error: errorMsg,
           guildId,
         });
 
@@ -99,12 +205,12 @@ export function registerScheduledEventTools(
           content: [
             {
               type: "text" as const,
-              text: `Error: ${error.message}`,
+              text: `Error: ${errorMsg}`,
             },
           ],
           structuredContent: {
             success: false,
-            error: error.message,
+            error: errorMsg,
           },
         };
       }
@@ -138,9 +244,11 @@ export function registerScheduledEventTools(
             status: z.string(),
             entityType: z.string(),
             channelId: z.string().nullable(),
-            entityMetadata: z.object({
-              location: z.string().optional(),
-            }).nullable(),
+            entityMetadata: z
+              .object({
+                location: z.string().optional(),
+              })
+              .nullable(),
             creatorId: z.string().nullable(),
             userCount: z.number().optional(),
             image: z.string().nullable(),
@@ -176,9 +284,11 @@ export function registerScheduledEventTools(
             status: GuildScheduledEventStatus[event.status],
             entityType: GuildScheduledEventEntityType[event.entityType],
             channelId: event.channelId || null,
-            entityMetadata: event.entityMetadata ? {
-              location: event.entityMetadata.location || undefined,
-            } : null,
+            entityMetadata: event.entityMetadata
+              ? {
+                  location: event.entityMetadata.location || undefined,
+                }
+              : null,
             creatorId: event.creatorId || null,
             userCount: event.userCount || undefined,
             image: event.coverImageURL() || null,
@@ -199,9 +309,10 @@ export function registerScheduledEventTools(
           ],
           structuredContent: output,
         };
-      } catch (error: any) {
+      } catch (error) {
+        const errorMsg = getErrorMessage(error);
         logger.error("Failed to get event details", {
-          error: error.message,
+          error: errorMsg,
           guildId,
           eventId,
         });
@@ -210,12 +321,12 @@ export function registerScheduledEventTools(
           content: [
             {
               type: "text" as const,
-              text: `Error: ${error.message}`,
+              text: `Error: ${errorMsg}`,
             },
           ],
           structuredContent: {
             success: false,
-            error: error.message,
+            error: errorMsg,
           },
         };
       }
@@ -230,20 +341,14 @@ export function registerScheduledEventTools(
       description: "Create a new scheduled event (stage, voice, or external)",
       inputSchema: {
         guildId: z.string().describe("Guild ID"),
-        name: z
-          .string()
-          .min(1)
-          .max(100)
-          .describe("Event name (1-100 characters)"),
+        name: z.string().min(1).max(100).describe("Event name (1-100 characters)"),
         description: z
           .string()
           .min(1)
           .max(1000)
           .optional()
           .describe("Event description (1-1000 characters)"),
-        scheduledStartTime: z
-          .string()
-          .describe("ISO 8601 timestamp for event start"),
+        scheduledStartTime: z.string().describe("ISO 8601 timestamp for event start"),
         scheduledEndTime: z
           .string()
           .optional()
@@ -259,10 +364,7 @@ export function registerScheduledEventTools(
           .string()
           .optional()
           .describe("External location URL or address (required for EXTERNAL)"),
-        image: z
-          .string()
-          .optional()
-          .describe("Base64 encoded cover image"),
+        image: z.string().optional().describe("Base64 encoded cover image"),
         reason: z.string().optional().describe("Audit log reason"),
       },
       outputSchema: {
@@ -295,54 +397,19 @@ export function registerScheduledEventTools(
         const client = discordManager.getClient();
         const guild = await validateGuildAccess(client, guildId);
 
-        // Check permissions
-        const botMember = await guild.members.fetch(client.user!.id);
-        if (!botMember.permissions.has(PermissionFlagsBits.ManageEvents)) {
-          throw new PermissionDeniedError("ManageEvents", guildId);
-        }
+        await validateEventPermissions(guild, client);
+        const mappedEntityType = validateAndMapEntityType(
+          entityType,
+          channelId,
+          location,
+          scheduledEndTime,
+        );
 
-        // Map entity type string to enum
-        const entityTypeMap: Record<string, GuildScheduledEventEntityType> = {
-          STAGE_INSTANCE: GuildScheduledEventEntityType.StageInstance,
-          VOICE: GuildScheduledEventEntityType.Voice,
-          EXTERNAL: GuildScheduledEventEntityType.External,
-        };
-
-        const mappedEntityType = entityTypeMap[entityType];
-
-        // Validate required fields based on entity type
-        if (
-          (entityType === "STAGE_INSTANCE" || entityType === "VOICE") &&
-          !channelId
-        ) {
-          throw new InvalidInputError(
-            "channelId",
-            "Required for STAGE_INSTANCE and VOICE events",
-          );
-        }
-
-        if (entityType === "EXTERNAL" && !location) {
-          throw new InvalidInputError(
-            "location",
-            "Required for EXTERNAL events",
-          );
-        }
-
-        if (entityType === "EXTERNAL" && !scheduledEndTime) {
-          throw new InvalidInputError(
-            "scheduledEndTime",
-            "Required for EXTERNAL events",
-          );
-        }
-
-        // Create event
         const event = await guild.scheduledEvents.create({
           name,
           description,
           scheduledStartTime: new Date(scheduledStartTime),
-          scheduledEndTime: scheduledEndTime
-            ? new Date(scheduledEndTime)
-            : undefined,
+          scheduledEndTime: scheduledEndTime ? new Date(scheduledEndTime) : undefined,
           privacyLevel: GuildScheduledEventPrivacyLevel.GuildOnly,
           entityType: mappedEntityType,
           channel: channelId || undefined,
@@ -377,9 +444,10 @@ export function registerScheduledEventTools(
           ],
           structuredContent: output,
         };
-      } catch (error: any) {
+      } catch (error) {
+        const errorMsg = getErrorMessage(error);
         logger.error("Failed to create scheduled event", {
-          error: error.message,
+          error: errorMsg,
           guildId,
           name,
         });
@@ -388,12 +456,12 @@ export function registerScheduledEventTools(
           content: [
             {
               type: "text" as const,
-              text: `Error: ${error.message}`,
+              text: `Error: ${errorMsg}`,
             },
           ],
           structuredContent: {
             success: false,
-            error: error.message,
+            error: errorMsg,
           },
         };
       }
@@ -409,36 +477,17 @@ export function registerScheduledEventTools(
       inputSchema: {
         guildId: z.string().describe("Guild ID"),
         eventId: z.string().describe("Event ID"),
-        name: z
-          .string()
-          .min(1)
-          .max(100)
-          .optional()
-          .describe("New event name"),
-        description: z
-          .string()
-          .min(1)
-          .max(1000)
-          .optional()
-          .describe("New description"),
-        scheduledStartTime: z
-          .string()
-          .optional()
-          .describe("New start time (ISO 8601)"),
-        scheduledEndTime: z
-          .string()
-          .optional()
-          .describe("New end time (ISO 8601)"),
+        name: z.string().min(1).max(100).optional().describe("New event name"),
+        description: z.string().min(1).max(1000).optional().describe("New description"),
+        scheduledStartTime: z.string().optional().describe("New start time (ISO 8601)"),
+        scheduledEndTime: z.string().optional().describe("New end time (ISO 8601)"),
         entityType: z
           .enum(["STAGE_INSTANCE", "VOICE", "EXTERNAL"])
           .optional()
           .describe("New entity type"),
         channelId: z.string().optional().describe("New channel ID"),
         location: z.string().optional().describe("New external location"),
-        status: z
-          .enum(["ACTIVE", "COMPLETED", "CANCELED"])
-          .optional()
-          .describe("New event status"),
+        status: z.enum(["ACTIVE", "COMPLETED", "CANCELED"]).optional().describe("New event status"),
         image: z.string().optional().describe("New cover image (base64)"),
         reason: z.string().optional().describe("Audit log reason"),
       },
@@ -472,53 +521,22 @@ export function registerScheduledEventTools(
         const client = discordManager.getClient();
         const guild = await validateGuildAccess(client, guildId);
 
-        // Check permissions
-        const botMember = await guild.members.fetch(client.user!.id);
-        if (!botMember.permissions.has(PermissionFlagsBits.ManageEvents)) {
-          throw new PermissionDeniedError("ManageEvents", guildId);
-        }
-
-        // Fetch event
-        const event = await guild.scheduledEvents.fetch(eventId);
-        if (!event) {
-          throw new InvalidInputError("eventId", "Event not found");
-        }
-
-        // Map entity type and status if provided
-        const entityTypeMap: Record<string, GuildScheduledEventEntityType> = {
-          STAGE_INSTANCE: GuildScheduledEventEntityType.StageInstance,
-          VOICE: GuildScheduledEventEntityType.Voice,
-          EXTERNAL: GuildScheduledEventEntityType.External,
-        };
-
-        const statusMap: Record<
-          string,
-          | GuildScheduledEventStatus.Active
-          | GuildScheduledEventStatus.Completed
-          | GuildScheduledEventStatus.Canceled
-        > = {
-          ACTIVE: GuildScheduledEventStatus.Active,
-          COMPLETED: GuildScheduledEventStatus.Completed,
-          CANCELED: GuildScheduledEventStatus.Canceled,
-        };
-
-        // Update event
-        const updated = await event.edit({
+        await validateEventPermissions(guild, client);
+        const event = await fetchAndValidateEvent(guild, eventId);
+        const updateOptions = buildUpdateOptions({
           name,
           description,
-          scheduledStartTime: scheduledStartTime
-            ? new Date(scheduledStartTime)
-            : undefined,
-          scheduledEndTime: scheduledEndTime
-            ? new Date(scheduledEndTime)
-            : undefined,
-          entityType: entityType ? entityTypeMap[entityType] : undefined,
-          channel: channelId || undefined,
-          entityMetadata: location ? { location } : undefined,
-          status: status ? statusMap[status] : undefined,
-          image: image || undefined,
+          scheduledStartTime,
+          scheduledEndTime,
+          entityType,
+          channelId,
+          location,
+          status,
+          image,
           reason,
         });
+
+        const updated = await event.edit(updateOptions);
 
         const output = {
           success: true,
@@ -543,9 +561,10 @@ export function registerScheduledEventTools(
           ],
           structuredContent: output,
         };
-      } catch (error: any) {
+      } catch (error) {
+        const errorMsg = getErrorMessage(error);
         logger.error("Failed to modify scheduled event", {
-          error: error.message,
+          error: errorMsg,
           guildId,
           eventId,
         });
@@ -554,12 +573,12 @@ export function registerScheduledEventTools(
           content: [
             {
               type: "text" as const,
-              text: `Error: ${error.message}`,
+              text: `Error: ${errorMsg}`,
             },
           ],
           structuredContent: {
             success: false,
-            error: error.message,
+            error: errorMsg,
           },
         };
       }
@@ -588,7 +607,7 @@ export function registerScheduledEventTools(
         const guild = await validateGuildAccess(client, guildId);
 
         // Check permissions
-        const botMember = await guild.members.fetch(client.user!.id);
+        const botMember = await getBotMember(guild, client);
         if (!botMember.permissions.has(PermissionFlagsBits.ManageEvents)) {
           throw new PermissionDeniedError("ManageEvents", guildId);
         }
@@ -621,9 +640,10 @@ export function registerScheduledEventTools(
           ],
           structuredContent: output,
         };
-      } catch (error: any) {
+      } catch (error) {
+        const errorMsg = getErrorMessage(error);
         logger.error("Failed to delete scheduled event", {
-          error: error.message,
+          error: errorMsg,
           guildId,
           eventId,
         });
@@ -632,12 +652,12 @@ export function registerScheduledEventTools(
           content: [
             {
               type: "text" as const,
-              text: `Error: ${error.message}`,
+              text: `Error: ${errorMsg}`,
             },
           ],
           structuredContent: {
             success: false,
-            error: error.message,
+            error: errorMsg,
           },
         };
       }
@@ -660,14 +680,8 @@ export function registerScheduledEventTools(
           .max(100)
           .optional()
           .describe("Max users to return (1-100, default: 100)"),
-        withMember: z
-          .boolean()
-          .optional()
-          .describe("Include guild member data (default: false)"),
-        before: z
-          .string()
-          .optional()
-          .describe("User ID to get users before"),
+        withMember: z.boolean().optional().describe("Include guild member data (default: false)"),
+        before: z.string().optional().describe("User ID to get users before"),
         after: z.string().optional().describe("User ID to get users after"),
       },
       outputSchema: {
@@ -712,7 +726,7 @@ export function registerScheduledEventTools(
         });
 
         const userList = users.map((subscriber) => {
-          const member = subscriber.member;
+          const member: GuildMember | null = subscriber.member;
           return {
             userId: subscriber.user.id,
             username: subscriber.user.username,
@@ -720,9 +734,10 @@ export function registerScheduledEventTools(
             guildMember:
               member && withMember
                 ? {
-                    nickname: (member as any).nickname || null,
-                    roles: (member as any).roles?.cache?.map((r: any) => r.id) || [],
-                    joinedAt: (member as any).joinedAt?.toISOString() || null,
+                    nickname: (member as unknown as GuildMember).nickname || null,
+                    roles:
+                      (member as unknown as GuildMember).roles?.cache?.map((r: Role) => r.id) || [],
+                    joinedAt: (member as unknown as GuildMember).joinedAt?.toISOString() || null,
                   }
                 : undefined,
           };
@@ -749,9 +764,10 @@ export function registerScheduledEventTools(
           ],
           structuredContent: output,
         };
-      } catch (error: any) {
+      } catch (error) {
+        const errorMsg = getErrorMessage(error);
         logger.error("Failed to get event users", {
-          error: error.message,
+          error: errorMsg,
           guildId,
           eventId,
         });
@@ -760,12 +776,12 @@ export function registerScheduledEventTools(
           content: [
             {
               type: "text" as const,
-              text: `Error: ${error.message}`,
+              text: `Error: ${errorMsg}`,
             },
           ],
           structuredContent: {
             success: false,
-            error: error.message,
+            error: errorMsg,
           },
         };
       }

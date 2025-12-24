@@ -1,7 +1,7 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { beforeEach, describe, expect, it } from "bun:test";
 import { z } from "zod";
-import { ToolRegistry } from "../src/registry/tool-registry.js";
 import { createRegistryAdapter } from "../src/registry/tool-adapter.js";
+import { ToolRegistry } from "../src/registry/tool-registry.js";
 
 describe("ToolRegistry", () => {
   let registry: ToolRegistry;
@@ -50,15 +50,9 @@ describe("ToolRegistry", () => {
 
   describe("listCategories", () => {
     it("should only return categories with tools", () => {
-      registry.registerTool(
-        "test_tool",
-        "moderation",
-        "Test",
-        "Test",
-        {},
-        {},
-        async () => ({ content: [{ type: "text" as const, text: "ok" }] }),
-      );
+      registry.registerTool("test_tool", "moderation", "Test", "Test", {}, {}, async () => ({
+        content: [{ type: "text" as const, text: "ok" }],
+      }));
 
       const categories = registry.listCategories();
       expect(categories.every((c) => c.toolCount > 0)).toBe(true);
@@ -83,15 +77,9 @@ describe("ToolRegistry", () => {
     });
 
     it("should be case-insensitive", () => {
-      registry.registerTool(
-        "test",
-        "moderation",
-        "Test",
-        "Test",
-        {},
-        {},
-        async () => ({ content: [{ type: "text" as const, text: "ok" }] }),
-      );
+      registry.registerTool("test", "moderation", "Test", "Test", {}, {}, async () => ({
+        content: [{ type: "text" as const, text: "ok" }],
+      }));
 
       const tools = registry.listTools("MODERATION");
       expect(tools.length).toBe(1);
@@ -183,11 +171,11 @@ describe("ToolRegistry", () => {
       );
 
       const handler = registry.getHandler("test_tool");
-      expect(handler).not.toBeNull();
+      expect(handler).toBeDefined();
 
-      const result = await handler!({});
-      expect(result.content[0].text).toBe("executed");
-      expect(result.structuredContent?.success).toBe(true);
+      const result = await handler?.({});
+      expect(result?.content[0].text).toBe("executed");
+      expect(result?.structuredContent?.success).toBe(true);
     });
   });
 });

@@ -1,4 +1,4 @@
-import { LogLevel } from "../utils/logger.js";
+import type { LogLevel } from "../utils/logger.js";
 
 export interface ServerConfig {
   // Discord Configuration
@@ -45,9 +45,6 @@ export function loadConfig(): ServerConfig {
 
     // Discord Client Configuration
     reconnectMaxRetries: parseInt(process.env.RECONNECT_MAX_RETRIES || "5", 10),
-    reconnectBackoffMs: parseInt(
-      process.env.RECONNECT_BACKOFF_MS || "1000",
-      10,
-    ),
+    reconnectBackoffMs: parseInt(process.env.RECONNECT_BACKOFF_MS || "1000", 10),
   };
 }

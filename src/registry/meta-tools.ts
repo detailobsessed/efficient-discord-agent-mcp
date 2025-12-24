@@ -5,16 +5,12 @@
  * token consumption when the LLM loads the tool list.
  */
 
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { ToolRegistry } from "./tool-registry.js";
-import { Logger } from "../utils/logger.js";
+import type { Logger } from "../utils/logger.js";
+import type { ToolRegistry } from "./tool-registry.js";
 
-export function registerMetaTools(
-  server: McpServer,
-  registry: ToolRegistry,
-  logger: Logger,
-): void {
+export function registerMetaTools(server: McpServer, registry: ToolRegistry, logger: Logger): void {
   // 1. List Categories
   server.registerTool(
     "list_categories",
@@ -67,9 +63,7 @@ export function registerMetaTools(
       inputSchema: {
         category: z
           .string()
-          .describe(
-            "Category name (e.g., 'messaging', 'channels', 'moderation')",
-          ),
+          .describe("Category name (e.g., 'messaging', 'channels', 'moderation')"),
       },
       outputSchema: {
         tools: z.array(
@@ -129,16 +123,8 @@ export function registerMetaTools(
       description:
         "Search for tools by keyword across all categories. Useful when you know what you want to do but not which category it's in.",
       inputSchema: {
-        query: z
-          .string()
-          .describe("Search term (e.g., 'ban', 'message', 'channel')"),
-        limit: z
-          .number()
-          .int()
-          .min(1)
-          .max(50)
-          .default(20)
-          .describe("Maximum results to return"),
+        query: z.string().describe("Search term (e.g., 'ban', 'message', 'channel')"),
+        limit: z.number().int().min(1).max(50).default(20).describe("Maximum results to return"),
       },
       outputSchema: {
         tools: z.array(
@@ -157,10 +143,7 @@ export function registerMetaTools(
       },
     },
     async ({ query, limit }) => {
-      const tools = registry.searchTools(
-        query as string,
-        (limit as number) || 20,
-      );
+      const tools = registry.searchTools(query as string, (limit as number) || 20);
 
       logger.info("Searched tools", { query, results: tools.length });
 
@@ -196,9 +179,7 @@ export function registerMetaTools(
       description:
         "Get the full input/output schema for a specific tool. Use this before calling execute_tool to understand required parameters.",
       inputSchema: {
-        toolName: z
-          .string()
-          .describe("Tool name (e.g., 'send_message', 'ban_member')"),
+        toolName: z.string().describe("Tool name (e.g., 'send_message', 'ban_member')"),
       },
       outputSchema: {
         name: z.string(),
@@ -266,10 +247,7 @@ export function registerMetaTools(
         "Execute a Discord tool by name with the provided parameters. Use get_tool_schema first to see required parameters.",
       inputSchema: {
         toolName: z.string().describe("Tool name to execute"),
-        params: z
-          .record(z.unknown())
-          .default({})
-          .describe("Tool parameters as key-value pairs"),
+        params: z.record(z.unknown()).default({}).describe("Tool parameters as key-value pairs"),
       },
       annotations: {
         title: "Execute Discord Tool",
@@ -303,7 +281,7 @@ export function registerMetaTools(
       try {
         const result = await handler(params as Record<string, unknown>);
         return result;
-      } catch (error: any) {
+      } catch (error) {
         logger.error("Tool execution failed", {
           toolName,
           error: error.message,

@@ -1,13 +1,14 @@
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { DiscordClientManager } from "../discord/client.js";
-import { Logger } from "../utils/logger.js";
-import { z } from "zod";
-import { PermissionDeniedError, InvalidInputError } from "../errors/discord.js";
-import { validateGuildAccess } from "../utils/guild-validation.js";
 import { PermissionFlagsBits } from "discord.js";
+import { z } from "zod";
+import type { DiscordClientManager } from "../discord/client.js";
+import { InvalidInputError, PermissionDeniedError } from "../errors/discord.js";
+import type { ToolRegistrationTarget } from "../registry/tool-adapter.js";
+import { getErrorMessage } from "../utils/errors.js";
+import { getBotMember, validateGuildAccess } from "../utils/guild-validation.js";
+import type { Logger } from "../utils/logger.js";
 
 export function registerEmojiTools(
-  server: McpServer,
+  server: ToolRegistrationTarget,
   discordManager: DiscordClientManager,
   logger: Logger,
 ) {
@@ -88,9 +89,10 @@ export function registerEmojiTools(
           ],
           structuredContent: output,
         };
-      } catch (error: any) {
+      } catch (error) {
+        const errorMsg = getErrorMessage(error);
         logger.error("Failed to list guild emojis", {
-          error: error.message,
+          error: errorMsg,
           guildId,
         });
 
@@ -98,12 +100,12 @@ export function registerEmojiTools(
           content: [
             {
               type: "text" as const,
-              text: `Error: ${error.message}`,
+              text: `Error: ${errorMsg}`,
             },
           ],
           structuredContent: {
             success: false,
-            error: error.message,
+            error: errorMsg,
           },
         };
       }
@@ -115,8 +117,7 @@ export function registerEmojiTools(
     "create_emoji",
     {
       title: "Create Guild Emoji",
-      description:
-        "Upload a custom emoji to the guild from base64 image data or file path",
+      description: "Upload a custom emoji to the guild from base64 image data or file path",
       inputSchema: {
         guildId: z.string().describe("Guild ID"),
         name: z
@@ -127,13 +128,8 @@ export function registerEmojiTools(
           .describe("Emoji name (2-32 alphanumeric characters and underscores)"),
         image: z
           .string()
-          .describe(
-            "Base64 encoded image data (data:image/png;base64,...) or file path",
-          ),
-        roles: z
-          .array(z.string())
-          .optional()
-          .describe("Array of role IDs that can use this emoji"),
+          .describe("Base64 encoded image data (data:image/png;base64,...) or file path"),
+        roles: z.array(z.string()).optional().describe("Array of role IDs that can use this emoji"),
         reason: z.string().optional().describe("Audit log reason"),
       },
       outputSchema: {
@@ -155,22 +151,14 @@ export function registerEmojiTools(
         const guild = await validateGuildAccess(client, guildId);
 
         // Check permissions
-        const botMember = await guild.members.fetch(client.user!.id);
-        if (
-          !botMember.permissions.has(PermissionFlagsBits.ManageGuildExpressions)
-        ) {
-          throw new PermissionDeniedError(
-            "ManageGuildExpressions",
-            guildId,
-          );
+        const botMember = await getBotMember(guild, client);
+        if (!botMember.permissions.has(PermissionFlagsBits.ManageGuildExpressions)) {
+          throw new PermissionDeniedError("ManageGuildExpressions", guildId);
         }
 
         // Validate image format
         if (!image.startsWith("data:image/") && !image.startsWith("/")) {
-          throw new InvalidInputError(
-            "image",
-            "Must be base64 data URI or absolute file path",
-          );
+          throw new InvalidInputError("image", "Must be base64 data URI or absolute file path");
         }
 
         // Create emoji
@@ -206,9 +194,10 @@ export function registerEmojiTools(
           ],
           structuredContent: output,
         };
-      } catch (error: any) {
+      } catch (error) {
+        const errorMsg = getErrorMessage(error);
         logger.error("Failed to create emoji", {
-          error: error.message,
+          error: errorMsg,
           guildId,
           name,
         });
@@ -217,12 +206,12 @@ export function registerEmojiTools(
           content: [
             {
               type: "text" as const,
-              text: `Error: ${error.message}`,
+              text: `Error: ${errorMsg}`,
             },
           ],
           structuredContent: {
             success: false,
-            error: error.message,
+            error: errorMsg,
           },
         };
       }
@@ -238,17 +227,8 @@ export function registerEmojiTools(
       inputSchema: {
         guildId: z.string().describe("Guild ID"),
         emojiId: z.string().describe("Emoji ID to modify"),
-        name: z
-          .string()
-          .min(2)
-          .max(32)
-          .regex(/^\w+$/)
-          .optional()
-          .describe("New emoji name"),
-        roles: z
-          .array(z.string())
-          .optional()
-          .describe("New array of role IDs (replaces existing)"),
+        name: z.string().min(2).max(32).regex(/^\w+$/).optional().describe("New emoji name"),
+        roles: z.array(z.string()).optional().describe("New array of role IDs (replaces existing)"),
         reason: z.string().optional().describe("Audit log reason"),
       },
       outputSchema: {
@@ -269,14 +249,9 @@ export function registerEmojiTools(
         const guild = await validateGuildAccess(client, guildId);
 
         // Check permissions
-        const botMember = await guild.members.fetch(client.user!.id);
-        if (
-          !botMember.permissions.has(PermissionFlagsBits.ManageGuildExpressions)
-        ) {
-          throw new PermissionDeniedError(
-            "ManageGuildExpressions",
-            guildId,
-          );
+        const botMember = await getBotMember(guild, client);
+        if (!botMember.permissions.has(PermissionFlagsBits.ManageGuildExpressions)) {
+          throw new PermissionDeniedError("ManageGuildExpressions", guildId);
         }
 
         // Fetch emoji
@@ -315,9 +290,10 @@ export function registerEmojiTools(
           ],
           structuredContent: output,
         };
-      } catch (error: any) {
+      } catch (error) {
+        const errorMsg = getErrorMessage(error);
         logger.error("Failed to modify emoji", {
-          error: error.message,
+          error: errorMsg,
           guildId,
           emojiId,
         });
@@ -326,12 +302,12 @@ export function registerEmojiTools(
           content: [
             {
               type: "text" as const,
-              text: `Error: ${error.message}`,
+              text: `Error: ${errorMsg}`,
             },
           ],
           structuredContent: {
             success: false,
-            error: error.message,
+            error: errorMsg,
           },
         };
       }
@@ -361,14 +337,9 @@ export function registerEmojiTools(
         const guild = await validateGuildAccess(client, guildId);
 
         // Check permissions
-        const botMember = await guild.members.fetch(client.user!.id);
-        if (
-          !botMember.permissions.has(PermissionFlagsBits.ManageGuildExpressions)
-        ) {
-          throw new PermissionDeniedError(
-            "ManageGuildExpressions",
-            guildId,
-          );
+        const botMember = await getBotMember(guild, client);
+        if (!botMember.permissions.has(PermissionFlagsBits.ManageGuildExpressions)) {
+          throw new PermissionDeniedError("ManageGuildExpressions", guildId);
         }
 
         // Fetch emoji
@@ -401,9 +372,10 @@ export function registerEmojiTools(
           ],
           structuredContent: output,
         };
-      } catch (error: any) {
+      } catch (error) {
+        const errorMsg = getErrorMessage(error);
         logger.error("Failed to delete emoji", {
-          error: error.message,
+          error: errorMsg,
           guildId,
           emojiId,
         });
@@ -412,12 +384,12 @@ export function registerEmojiTools(
           content: [
             {
               type: "text" as const,
-              text: `Error: ${error.message}`,
+              text: `Error: ${errorMsg}`,
             },
           ],
           structuredContent: {
             success: false,
-            error: error.message,
+            error: errorMsg,
           },
         };
       }

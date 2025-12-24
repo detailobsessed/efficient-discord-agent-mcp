@@ -1,4 +1,4 @@
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 
 export function registerModerationPrompts(server: McpServer) {
@@ -108,18 +108,11 @@ What is the content of your announcement?`,
     "configure-automod-rule",
     {
       title: "Auto-Moderation Rule Setup",
-      description:
-        "Step-by-step wizard for configuring auto-moderation rules (Phase 3 preview)",
+      description: "Step-by-step wizard for configuring auto-moderation rules (Phase 3 preview)",
       argsSchema: {
         guildId: z.string().describe("Server/Guild ID"),
         ruleType: z
-          .enum([
-            "keyword",
-            "spam",
-            "mention_spam",
-            "keyword_preset",
-            "member_profile",
-          ])
+          .enum(["keyword", "spam", "mention_spam", "keyword_preset", "member_profile"])
           .optional()
           .describe("Type of auto-moderation rule to configure"),
       },

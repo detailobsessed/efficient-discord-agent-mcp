@@ -5,7 +5,7 @@
  * Pattern adapted from unblu-mcp's test_mcp_client.py.
  */
 
-import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -21,19 +21,12 @@ interface ToolResult {
   content: ToolContent[];
   isError?: boolean;
 }
-import {
-  ToolRegistry,
-  createRegistryAdapter,
-  registerMetaTools,
-} from "../src/registry/index.js";
 
-// Mock logger for tests
-const mockLogger = {
-  info: () => {},
-  error: () => {},
-  warn: () => {},
-  debug: () => {},
-};
+import { createRegistryAdapter, registerMetaTools, ToolRegistry } from "../src/registry/index.js";
+import { Logger } from "../src/utils/logger.js";
+
+// Mock logger for tests - using actual Logger class with minimal output
+const mockLogger = new Logger("debug", "json");
 
 /**
  * Create a test MCP server with the registry pattern.
@@ -64,9 +57,7 @@ function createTestServer(): McpServer {
       },
     },
     async ({ channelId, content }) => ({
-      content: [
-        { type: "text" as const, text: `Message sent to ${channelId}` },
-      ],
+      content: [{ type: "text" as const, text: `Message sent to ${channelId}` }],
       structuredContent: {
         success: true,
         messageId: "mock-message-id",
@@ -119,17 +110,17 @@ function createTestServer(): McpServer {
       },
       outputSchema: {
         success: z.boolean(),
-        message: z.object({
-          id: z.string(),
-          content: z.string(),
-          authorUsername: z.string(),
-        }).optional(),
+        message: z
+          .object({
+            id: z.string(),
+            content: z.string(),
+            authorUsername: z.string(),
+          })
+          .optional(),
       },
     },
-    async ({ channelId, messageId }) => ({
-      content: [
-        { type: "text" as const, text: `Retrieved message ${messageId}` },
-      ],
+    async ({ messageId }) => ({
+      content: [{ type: "text" as const, text: `Retrieved message ${messageId}` }],
       structuredContent: {
         success: true,
         message: { id: messageId, content: "Test message", authorUsername: "TestUser" },
@@ -153,10 +144,8 @@ function createTestServer(): McpServer {
         replyToId: z.string().optional(),
       },
     },
-    async ({ channelId, messageId, content }) => ({
-      content: [
-        { type: "text" as const, text: `Replied to message ${messageId}` },
-      ],
+    async ({ messageId }) => ({
+      content: [{ type: "text" as const, text: `Replied to message ${messageId}` }],
       structuredContent: {
         success: true,
         messageId: "new-reply-id",
@@ -181,10 +170,8 @@ function createTestServer(): McpServer {
         totalFound: z.number().optional(),
       },
     },
-    async ({ channelId, query, limit }) => ({
-      content: [
-        { type: "text" as const, text: `Found messages matching "${query}"` },
-      ],
+    async ({ query }) => ({
+      content: [{ type: "text" as const, text: `Found messages matching "${query}"` }],
       structuredContent: {
         success: true,
         messages: [{ id: "1", content: "Matching message" }],
@@ -208,9 +195,7 @@ function createTestServer(): McpServer {
       },
     },
     async () => ({
-      content: [
-        { type: "text" as const, text: "Bot is in 1 server(s)" },
-      ],
+      content: [{ type: "text" as const, text: "Bot is in 1 server(s)" }],
       structuredContent: {
         success: true,
         guilds: [{ id: "123", name: "Test Server" }],
@@ -229,17 +214,17 @@ function createTestServer(): McpServer {
       },
       outputSchema: {
         success: z.boolean(),
-        server: z.object({
-          id: z.string(),
-          name: z.string(),
-          memberCount: z.number(),
-        }).optional(),
+        server: z
+          .object({
+            id: z.string(),
+            name: z.string(),
+            memberCount: z.number(),
+          })
+          .optional(),
       },
     },
     async ({ guildId }) => ({
-      content: [
-        { type: "text" as const, text: "Server: Test Server" },
-      ],
+      content: [{ type: "text" as const, text: "Server: Test Server" }],
       structuredContent: {
         success: true,
         server: { id: guildId, name: "Test Server", memberCount: 100 },
@@ -274,7 +259,7 @@ function createTestServer(): McpServer {
   );
 
   // Register meta-tools
-  registerMetaTools(mcpServer, registry, mockLogger as any);
+  registerMetaTools(mcpServer, registry, mockLogger);
 
   return mcpServer;
 }
@@ -289,10 +274,7 @@ describe("MCP Client Integration", () => {
     server = createTestServer();
     [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
 
-    client = new Client(
-      { name: "test-client", version: "1.0.0" },
-      { capabilities: {} },
-    );
+    client = new Client({ name: "test-client", version: "1.0.0" }, { capabilities: {} });
 
     await server.connect(serverTransport);
     await client.connect(clientTransport);
@@ -321,7 +303,7 @@ describe("MCP Client Integration", () => {
 
       for (const tool of result.tools) {
         expect(tool.description).toBeDefined();
-        expect(tool.description!.length).toBeGreaterThan(0);
+        expect(tool.description?.length).toBeGreaterThan(0);
       }
     });
   });
@@ -339,8 +321,8 @@ describe("MCP Client Integration", () => {
       // Parse the structured content from the text response
       const textContent = result.content.find((c) => c.type === "text");
       expect(textContent).toBeDefined();
-      expect(textContent!.text).toContain("messaging");
-      expect(textContent!.text).toContain("moderation");
+      expect(textContent?.text).toContain("messaging");
+      expect(textContent?.text).toContain("moderation");
     });
   });
 
@@ -353,8 +335,8 @@ describe("MCP Client Integration", () => {
 
       const textContent = result.content.find((c) => c.type === "text");
       expect(textContent).toBeDefined();
-      expect(textContent!.text).toContain("send_message");
-      expect(textContent!.text).toContain("read_messages");
+      expect(textContent?.text).toContain("send_message");
+      expect(textContent?.text).toContain("read_messages");
     });
 
     it("should return error for invalid category", async () => {
@@ -376,7 +358,7 @@ describe("MCP Client Integration", () => {
 
       const textContent = result.content.find((c) => c.type === "text");
       expect(textContent).toBeDefined();
-      expect(textContent!.text).toContain("ban_member");
+      expect(textContent?.text).toContain("ban_member");
     });
 
     it("should find tools by description", async () => {
@@ -387,7 +369,7 @@ describe("MCP Client Integration", () => {
 
       const textContent = result.content.find((c) => c.type === "text");
       expect(textContent).toBeDefined();
-      expect(textContent!.text).toContain("send_message");
+      expect(textContent?.text).toContain("send_message");
     });
 
     it("should return empty for no matches", async () => {
@@ -398,7 +380,7 @@ describe("MCP Client Integration", () => {
 
       const textContent = result.content.find((c) => c.type === "text");
       expect(textContent).toBeDefined();
-      expect(textContent!.text).toContain("No tools found");
+      expect(textContent?.text).toContain("No tools found");
     });
   });
 
@@ -411,9 +393,9 @@ describe("MCP Client Integration", () => {
 
       const textContent = result.content.find((c) => c.type === "text");
       expect(textContent).toBeDefined();
-      expect(textContent!.text).toContain("Send Message");
-      expect(textContent!.text).toContain("channelId");
-      expect(textContent!.text).toContain("content");
+      expect(textContent?.text).toContain("Send Message");
+      expect(textContent?.text).toContain("channelId");
+      expect(textContent?.text).toContain("content");
     });
 
     it("should return error for invalid tool", async () => {
@@ -441,7 +423,7 @@ describe("MCP Client Integration", () => {
 
       const textContent = result.content.find((c) => c.type === "text");
       expect(textContent).toBeDefined();
-      expect(textContent!.text).toContain("Message sent");
+      expect(textContent?.text).toContain("Message sent");
     });
 
     it("should return error for invalid tool", async () => {
@@ -468,10 +450,7 @@ describe("Progressive Disclosure Workflow", () => {
     server = createTestServer();
     [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
 
-    client = new Client(
-      { name: "test-client", version: "1.0.0" },
-      { capabilities: {} },
-    );
+    client = new Client({ name: "test-client", version: "1.0.0" }, { capabilities: {} });
 
     await server.connect(serverTransport);
     await client.connect(clientTransport);
@@ -518,7 +497,7 @@ describe("Progressive Disclosure Workflow", () => {
     expect(executeResult.content).toBeDefined();
 
     const textContent = executeResult.content.find((c) => c.type === "text");
-    expect(textContent!.text).toContain("Message sent");
+    expect(textContent?.text).toContain("Message sent");
   });
 });
 
@@ -532,10 +511,7 @@ describe("New Tools Tests", () => {
     server = createTestServer();
     [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
 
-    client = new Client(
-      { name: "test-client", version: "1.0.0" },
-      { capabilities: {} },
-    );
+    client = new Client({ name: "test-client", version: "1.0.0" }, { capabilities: {} });
 
     await server.connect(serverTransport);
     await client.connect(clientTransport);
@@ -555,7 +531,7 @@ describe("New Tools Tests", () => {
 
       expect(result.content).toBeDefined();
       const textContent = result.content.find((c) => c.type === "text");
-      expect(textContent!.text).toContain("server");
+      expect(textContent?.text).toContain("server");
     });
 
     it("should get server info", async () => {
@@ -569,7 +545,7 @@ describe("New Tools Tests", () => {
 
       expect(result.content).toBeDefined();
       const textContent = result.content.find((c) => c.type === "text");
-      expect(textContent!.text).toContain("Server");
+      expect(textContent?.text).toContain("Server");
     });
   });
 
@@ -585,7 +561,7 @@ describe("New Tools Tests", () => {
 
       expect(result.content).toBeDefined();
       const textContent = result.content.find((c) => c.type === "text");
-      expect(textContent!.text).toContain("Retrieved message");
+      expect(textContent?.text).toContain("Retrieved message");
     });
 
     it("should reply to a message", async () => {
@@ -603,7 +579,7 @@ describe("New Tools Tests", () => {
 
       expect(result.content).toBeDefined();
       const textContent = result.content.find((c) => c.type === "text");
-      expect(textContent!.text).toContain("Replied to message");
+      expect(textContent?.text).toContain("Replied to message");
     });
 
     it("should search messages", async () => {
@@ -617,7 +593,7 @@ describe("New Tools Tests", () => {
 
       expect(result.content).toBeDefined();
       const textContent = result.content.find((c) => c.type === "text");
-      expect(textContent!.text).toContain("Found messages");
+      expect(textContent?.text).toContain("Found messages");
     });
   });
 
@@ -630,8 +606,8 @@ describe("New Tools Tests", () => {
 
       expect(result.content).toBeDefined();
       const textContent = result.content.find((c) => c.type === "text");
-      expect(textContent!.text).toContain("list_guilds");
-      expect(textContent!.text).toContain("get_server_info");
+      expect(textContent?.text).toContain("list_guilds");
+      expect(textContent?.text).toContain("get_server_info");
     });
 
     it("should find new messaging tools", async () => {
@@ -642,9 +618,9 @@ describe("New Tools Tests", () => {
 
       expect(result.content).toBeDefined();
       const textContent = result.content.find((c) => c.type === "text");
-      expect(textContent!.text).toContain("get_message");
-      expect(textContent!.text).toContain("reply_to_message");
-      expect(textContent!.text).toContain("search_messages");
+      expect(textContent?.text).toContain("get_message");
+      expect(textContent?.text).toContain("reply_to_message");
+      expect(textContent?.text).toContain("search_messages");
     });
   });
 });

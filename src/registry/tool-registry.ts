@@ -7,7 +7,7 @@
  * Pattern inspired by unblu-mcp server.
  */
 
-import { ZodType } from "zod";
+import type { ZodType } from "zod";
 
 export interface ToolInfo {
   name: string;
@@ -29,13 +29,11 @@ export interface CategoryInfo {
   toolCount: number;
 }
 
-export interface ToolHandler {
-  (params: Record<string, unknown>): Promise<{
-    content: Array<{ type: "text"; text: string }>;
-    structuredContent?: Record<string, unknown>;
-    isError?: boolean;
-  }>;
-}
+export type ToolHandler = (params: Record<string, unknown>) => Promise<{
+  content: Array<{ type: "text"; text: string }>;
+  structuredContent?: Record<string, unknown>;
+  isError?: boolean;
+}>;
 
 interface RegisteredTool {
   info: ToolInfo;
@@ -59,8 +57,7 @@ export class ToolRegistry {
     const categoryDefs: Array<{ name: string; description: string }> = [
       {
         name: "messaging",
-        description:
-          "Send, read, edit, delete messages. Add reactions, pin/unpin messages.",
+        description: "Send, read, edit, delete messages. Add reactions, pin/unpin messages.",
       },
       {
         name: "channels",
@@ -69,18 +66,15 @@ export class ToolRegistry {
       },
       {
         name: "members",
-        description:
-          "Get member info, list members, manage nicknames, assign/remove roles.",
+        description: "Get member info, list members, manage nicknames, assign/remove roles.",
       },
       {
         name: "roles",
-        description:
-          "Create, modify, delete roles. List roles and get role details.",
+        description: "Create, modify, delete roles. List roles and get role details.",
       },
       {
         name: "server",
-        description:
-          "Server info, settings, audit logs, webhooks, and invites.",
+        description: "Server info, settings, audit logs, webhooks, and invites.",
       },
       {
         name: "moderation",
@@ -96,18 +90,15 @@ export class ToolRegistry {
       },
       {
         name: "scheduled-events",
-        description:
-          "Create, modify, delete scheduled events. List events and attendees.",
+        description: "Create, modify, delete scheduled events. List events and attendees.",
       },
       {
         name: "automod",
-        description:
-          "Create, modify, delete auto-moderation rules for content filtering.",
+        description: "Create, modify, delete auto-moderation rules for content filtering.",
       },
       {
         name: "application-commands",
-        description:
-          "Manage slash commands and context menu commands for the bot.",
+        description: "Manage slash commands and context menu commands for the bot.",
       },
     ];
 
@@ -159,9 +150,7 @@ export class ToolRegistry {
    * List all available categories.
    */
   listCategories(): CategoryInfo[] {
-    return Array.from(this.categories.values()).filter(
-      (cat) => cat.toolCount > 0,
-    );
+    return Array.from(this.categories.values()).filter((cat) => cat.toolCount > 0);
   }
 
   /**
@@ -258,13 +247,15 @@ export class ToolRegistry {
     return result;
   }
 
-  private handleZodString(def: ZodDef): Record<string, unknown> {
-    const schema: Record<string, unknown> = { type: "string" };
-    for (const check of def.checks || []) {
+  private applyStringChecks(
+    schema: Record<string, unknown>,
+    checks?: Array<{ kind: string; value?: unknown }>,
+  ) {
+    if (!checks) return;
+    for (const check of checks) {
       if (check.kind === "max") schema.maxLength = check.value;
       if (check.kind === "min") schema.minLength = check.value;
     }
-    return schema;
   }
 
   private handleZodNumber(def: ZodDef): Record<string, unknown> {
@@ -278,19 +269,27 @@ export class ToolRegistry {
   }
 
   private handleZodArray(def: ZodDef): Record<string, unknown> {
-    const schema: Record<string, unknown> = { type: "array", items: this.zodToJsonSchema(def.type!) };
+    const schema: Record<string, unknown> = {
+      type: "array",
+      items: def.type ? this.zodToJsonSchema(def.type) : { type: "unknown" },
+    };
     if (def.maxLength) schema.maxItems = def.maxLength.value;
     if (def.minLength) schema.minItems = def.minLength.value;
     return schema;
   }
 
-  private handleZodWrapper(def: ZodDef, extraProps: Record<string, unknown>): Record<string, unknown> {
-    const schema = this.zodToJsonSchema(def.innerType!) as Record<string, unknown>;
+  private handleZodWrapper(
+    def: ZodDef,
+    extraProps: Record<string, unknown>,
+  ): Record<string, unknown> {
+    const schema = (
+      def.innerType ? this.zodToJsonSchema(def.innerType) : { type: "unknown" }
+    ) as Record<string, unknown>;
     return { ...schema, ...extraProps };
   }
 
   private zodToJsonSchema(zodType: ZodType): unknown {
-    const def = (zodType as { _def: ZodDef })._def;
+    const def = (zodType as unknown as { _def: ZodDef })._def;
     if (!def) return { type: "unknown" };
 
     const { typeName, description } = def;
@@ -298,7 +297,8 @@ export class ToolRegistry {
 
     switch (typeName) {
       case "ZodString":
-        schema = this.handleZodString(def);
+        schema = { type: "string" };
+        this.applyStringChecks(schema, def.checks);
         break;
       case "ZodNumber":
         schema = this.handleZodNumber(def);
@@ -310,19 +310,23 @@ export class ToolRegistry {
         schema = this.handleZodArray(def);
         break;
       case "ZodObject":
-        schema = { type: "object", properties: this.serializeSchema(def.shape!()) };
+        schema = { type: "object", properties: def.shape ? this.serializeSchema(def.shape()) : {} };
         break;
       case "ZodOptional":
         schema = this.handleZodWrapper(def, { optional: true });
         break;
       case "ZodDefault":
-        schema = this.handleZodWrapper(def, { default: def.defaultValue!() });
+        schema = this.handleZodWrapper(def, {
+          default: def.defaultValue ? def.defaultValue() : undefined,
+        });
         break;
       case "ZodEnum":
         schema = { type: "string", enum: def.values };
         break;
       case "ZodUnion":
-        schema = { oneOf: def.options!.map((opt: ZodType) => this.zodToJsonSchema(opt)) };
+        schema = {
+          oneOf: def.options ? def.options.map((opt: ZodType) => this.zodToJsonSchema(opt)) : [],
+        };
         break;
       case "ZodNullable":
         schema = this.handleZodWrapper(def, { nullable: true });

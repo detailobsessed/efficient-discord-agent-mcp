@@ -1,16 +1,66 @@
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { DiscordClientManager } from "../discord/client.js";
-import { Logger } from "../utils/logger.js";
+import { type Client, type Guild, PermissionFlagsBits, type Sticker } from "discord.js";
 import { z } from "zod";
-import { PermissionDeniedError, InvalidInputError } from "../errors/discord.js";
-import { validateGuildAccess } from "../utils/guild-validation.js";
-import { PermissionFlagsBits } from "discord.js";
+import type { DiscordClientManager } from "../discord/client.js";
+import { InvalidInputError, PermissionDeniedError } from "../errors/discord.js";
+import type { ToolRegistrationTarget } from "../registry/tool-adapter.js";
+import { getErrorMessage } from "../utils/errors.js";
+import { getBotMember, validateGuildAccess } from "../utils/guild-validation.js";
+import type { Logger } from "../utils/logger.js";
 
 export function registerStickerTools(
-  server: McpServer,
+  server: ToolRegistrationTarget,
   discordManager: DiscordClientManager,
   logger: Logger,
 ) {
+  function mapStickerFormat(format: number): string {
+    switch (format) {
+      case 1:
+        return "PNG";
+      case 2:
+        return "APNG";
+      case 3:
+        return "LOTTIE";
+      default:
+        return "UNKNOWN";
+    }
+  }
+
+  function mapStickerToList(sticker: Sticker) {
+    return {
+      id: sticker.id,
+      name: sticker.name,
+      description: sticker.description || null,
+      tags: sticker.tags || null,
+      format: mapStickerFormat(sticker.format),
+      available: sticker.available !== false,
+      creator: sticker.user
+        ? {
+            id: sticker.user.id,
+            username: sticker.user.username,
+          }
+        : undefined,
+    };
+  }
+
+  async function validateStickerPermissions(guild: Guild, client: Client) {
+    const botMember = await getBotMember(guild, client);
+    if (!botMember.permissions.has(PermissionFlagsBits.ManageGuildExpressions)) {
+      throw new PermissionDeniedError("ManageGuildExpressions", guild.id);
+    }
+
+    // Check guild boost level for sticker creation
+    const hasFeature =
+      guild.features.includes("VERIFIED") ||
+      guild.features.includes("PARTNERED") ||
+      guild.premiumTier >= 2;
+
+    if (!hasFeature) {
+      throw new InvalidInputError(
+        "guild",
+        "Guild must be level 2 boosted, verified, or partnered to create stickers",
+      );
+    }
+  }
   // List Guild Stickers Tool
   server.registerTool(
     "list_guild_stickers",
@@ -52,20 +102,7 @@ export function registerStickerTools(
         // Fetch all stickers
         const stickers = await guild.stickers.fetch();
 
-        const stickerList = stickers.map((sticker) => ({
-          id: sticker.id,
-          name: sticker.name,
-          description: sticker.description || null,
-          tags: sticker.tags || null,
-          format: sticker.format === 1 ? "PNG" : sticker.format === 2 ? "APNG" : sticker.format === 3 ? "LOTTIE" : "UNKNOWN",
-          available: sticker.available !== false,
-          creator: sticker.user
-            ? {
-                id: sticker.user.id,
-                username: sticker.user.username,
-              }
-            : undefined,
-        }));
+        const stickerList = stickers.map(mapStickerToList);
 
         const output = {
           success: true,
@@ -87,9 +124,10 @@ export function registerStickerTools(
           ],
           structuredContent: output,
         };
-      } catch (error: any) {
+      } catch (error) {
+        const errorMsg = getErrorMessage(error);
         logger.error("Failed to list guild stickers", {
-          error: error.message,
+          error: errorMsg,
           guildId,
         });
 
@@ -97,12 +135,12 @@ export function registerStickerTools(
           content: [
             {
               type: "text" as const,
-              text: `Error: ${error.message}`,
+              text: `Error: ${errorMsg}`,
             },
           ],
           structuredContent: {
             success: false,
-            error: error.message,
+            error: errorMsg,
           },
         };
       }
@@ -114,26 +152,13 @@ export function registerStickerTools(
     "create_sticker",
     {
       title: "Create Guild Sticker",
-      description:
-        "Upload a custom sticker to the guild (PNG, APNG, or Lottie JSON)",
+      description: "Upload a custom sticker to the guild (PNG, APNG, or Lottie JSON)",
       inputSchema: {
         guildId: z.string().describe("Guild ID"),
-        name: z
-          .string()
-          .min(2)
-          .max(30)
-          .describe("Sticker name (2-30 characters)"),
-        description: z
-          .string()
-          .min(2)
-          .max(100)
-          .describe("Sticker description (2-100 characters)"),
-        tags: z
-          .string()
-          .describe("Related emoji or keywords (comma-separated)"),
-        file: z
-          .string()
-          .describe("File path or base64 data URI (PNG/APNG/Lottie JSON)"),
+        name: z.string().min(2).max(30).describe("Sticker name (2-30 characters)"),
+        description: z.string().min(2).max(100).describe("Sticker description (2-100 characters)"),
+        tags: z.string().describe("Related emoji or keywords (comma-separated)"),
+        file: z.string().describe("File path or base64 data URI (PNG/APNG/Lottie JSON)"),
         reason: z.string().optional().describe("Audit log reason"),
       },
       outputSchema: {
@@ -155,29 +180,7 @@ export function registerStickerTools(
         const client = discordManager.getClient();
         const guild = await validateGuildAccess(client, guildId);
 
-        // Check permissions
-        const botMember = await guild.members.fetch(client.user!.id);
-        if (
-          !botMember.permissions.has(PermissionFlagsBits.ManageGuildExpressions)
-        ) {
-          throw new PermissionDeniedError(
-            "ManageGuildExpressions",
-            guildId,
-          );
-        }
-
-        // Check guild boost level for sticker creation
-        // Stickers require guild level 2 boost or higher (or verified/partnered)
-        const hasFeature = guild.features.includes("VERIFIED") ||
-          guild.features.includes("PARTNERED") ||
-          guild.premiumTier >= 2;
-
-        if (!hasFeature) {
-          throw new InvalidInputError(
-            "guild",
-            "Guild must be level 2 boosted, verified, or partnered to create stickers",
-          );
-        }
+        await validateStickerPermissions(guild, client);
 
         // Create sticker
         const sticker = await guild.stickers.create({
@@ -195,7 +198,7 @@ export function registerStickerTools(
             name: sticker.name,
             description: sticker.description || "",
             tags: sticker.tags || "",
-            format: sticker.format === 1 ? "PNG" : sticker.format === 2 ? "APNG" : sticker.format === 3 ? "LOTTIE" : "UNKNOWN",
+            format: mapStickerFormat(sticker.format),
           },
         };
 
@@ -214,9 +217,10 @@ export function registerStickerTools(
           ],
           structuredContent: output,
         };
-      } catch (error: any) {
+      } catch (error) {
+        const errorMsg = getErrorMessage(error);
         logger.error("Failed to create sticker", {
-          error: error.message,
+          error: errorMsg,
           guildId,
           name,
         });
@@ -225,12 +229,12 @@ export function registerStickerTools(
           content: [
             {
               type: "text" as const,
-              text: `Error: ${error.message}`,
+              text: `Error: ${errorMsg}`,
             },
           ],
           structuredContent: {
             success: false,
-            error: error.message,
+            error: errorMsg,
           },
         };
       }
@@ -242,23 +246,12 @@ export function registerStickerTools(
     "modify_sticker",
     {
       title: "Modify Guild Sticker",
-      description:
-        "Update an existing custom sticker's name, description, or tags",
+      description: "Update an existing custom sticker's name, description, or tags",
       inputSchema: {
         guildId: z.string().describe("Guild ID"),
         stickerId: z.string().describe("Sticker ID to modify"),
-        name: z
-          .string()
-          .min(2)
-          .max(30)
-          .optional()
-          .describe("New sticker name"),
-        description: z
-          .string()
-          .min(2)
-          .max(100)
-          .optional()
-          .describe("New description"),
+        name: z.string().min(2).max(30).optional().describe("New sticker name"),
+        description: z.string().min(2).max(100).optional().describe("New description"),
         tags: z.string().optional().describe("New tags"),
         reason: z.string().optional().describe("Audit log reason"),
       },
@@ -281,14 +274,9 @@ export function registerStickerTools(
         const guild = await validateGuildAccess(client, guildId);
 
         // Check permissions
-        const botMember = await guild.members.fetch(client.user!.id);
-        if (
-          !botMember.permissions.has(PermissionFlagsBits.ManageGuildExpressions)
-        ) {
-          throw new PermissionDeniedError(
-            "ManageGuildExpressions",
-            guildId,
-          );
+        const botMember = await getBotMember(guild, client);
+        if (!botMember.permissions.has(PermissionFlagsBits.ManageGuildExpressions)) {
+          throw new PermissionDeniedError("ManageGuildExpressions", guildId);
         }
 
         // Fetch sticker
@@ -329,9 +317,10 @@ export function registerStickerTools(
           ],
           structuredContent: output,
         };
-      } catch (error: any) {
+      } catch (error) {
+        const errorMsg = getErrorMessage(error);
         logger.error("Failed to modify sticker", {
-          error: error.message,
+          error: errorMsg,
           guildId,
           stickerId,
         });
@@ -340,12 +329,12 @@ export function registerStickerTools(
           content: [
             {
               type: "text" as const,
-              text: `Error: ${error.message}`,
+              text: `Error: ${errorMsg}`,
             },
           ],
           structuredContent: {
             success: false,
-            error: error.message,
+            error: errorMsg,
           },
         };
       }
@@ -375,14 +364,9 @@ export function registerStickerTools(
         const guild = await validateGuildAccess(client, guildId);
 
         // Check permissions
-        const botMember = await guild.members.fetch(client.user!.id);
-        if (
-          !botMember.permissions.has(PermissionFlagsBits.ManageGuildExpressions)
-        ) {
-          throw new PermissionDeniedError(
-            "ManageGuildExpressions",
-            guildId,
-          );
+        const botMember = await getBotMember(guild, client);
+        if (!botMember.permissions.has(PermissionFlagsBits.ManageGuildExpressions)) {
+          throw new PermissionDeniedError("ManageGuildExpressions", guildId);
         }
 
         // Fetch sticker
@@ -415,9 +399,10 @@ export function registerStickerTools(
           ],
           structuredContent: output,
         };
-      } catch (error: any) {
+      } catch (error) {
+        const errorMsg = getErrorMessage(error);
         logger.error("Failed to delete sticker", {
-          error: error.message,
+          error: errorMsg,
           guildId,
           stickerId,
         });
@@ -426,12 +411,12 @@ export function registerStickerTools(
           content: [
             {
               type: "text" as const,
-              text: `Error: ${error.message}`,
+              text: `Error: ${errorMsg}`,
             },
           ],
           structuredContent: {
             success: false,
-            error: error.message,
+            error: errorMsg,
           },
         };
       }

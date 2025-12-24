@@ -1,20 +1,174 @@
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { DiscordClientManager } from "../discord/client.js";
-import { Logger } from "../utils/logger.js";
-import { z } from "zod";
 import {
-  PermissionDeniedError,
+  type Client,
+  type Message,
+  PermissionFlagsBits,
+  type PermissionResolvable,
+  type TextBasedChannel,
+} from "discord.js";
+import { z } from "zod";
+import type { DiscordClientManager } from "../discord/client.js";
+import {
   ChannelNotFoundError,
   MessageNotFoundError,
+  PermissionDeniedError,
 } from "../errors/discord.js";
+import type { ToolRegistrationTarget } from "../registry/tool-adapter.js";
 import { embedSchema, messageSchema } from "../types/schemas.js";
-import { PermissionFlagsBits, Message } from "discord.js";
+import { getErrorMessage } from "../utils/errors.js";
+import type { Logger } from "../utils/logger.js";
 
 export function registerMessagingTools(
-  server: McpServer,
+  server: ToolRegistrationTarget,
   discordManager: DiscordClientManager,
   logger: Logger,
 ) {
+  /**
+   * Fetches a text-based channel and validates it exists
+   */
+  async function fetchTextChannel(client: Client, channelId: string): Promise<TextBasedChannel> {
+    const channel = await client.channels.fetch(channelId).catch(() => null);
+    if (!channel || !channel.isTextBased()) {
+      throw new ChannelNotFoundError(channelId);
+    }
+    return channel;
+  }
+
+  /**
+   * Checks if the bot has the required permission in a channel
+   */
+  function checkChannelPermission(
+    channel: TextBasedChannel,
+    client: Client,
+    permission: PermissionResolvable,
+    permissionName: string,
+  ): void {
+    if ("guild" in channel && channel.guild) {
+      if (!client.user) throw new Error("Client user not available");
+      const permissions = channel.permissionsFor(client.user);
+      if (!permissions?.has(permission)) {
+        throw new PermissionDeniedError(permissionName, channel.id);
+      }
+    }
+  }
+
+  /**
+   * Checks send message permissions including thread permissions
+   */
+  function checkSendPermissions(channel: TextBasedChannel, client: Client): void {
+    checkChannelPermission(channel, client, PermissionFlagsBits.SendMessages, "SendMessages");
+    if (channel.isThread()) {
+      checkChannelPermission(
+        channel,
+        client,
+        PermissionFlagsBits.SendMessagesInThreads,
+        "SendMessagesInThreads",
+      );
+    }
+  }
+
+  /**
+   * Fetches a message from a channel
+   */
+  async function fetchMessage(
+    channel: TextBasedChannel,
+    messageId: string,
+    channelId: string,
+  ): Promise<Message> {
+    if (!("messages" in channel)) {
+      throw new ChannelNotFoundError(channelId);
+    }
+    const message = await channel.messages.fetch(messageId).catch(() => null);
+    if (!message) {
+      throw new MessageNotFoundError(messageId);
+    }
+    return message;
+  }
+
+  /**
+   * Embed payload interface for Discord embeds
+   */
+  interface EmbedPayload {
+    title?: string;
+    description?: string;
+    url?: string;
+    color?: number;
+    author?: { name: string; url?: string; icon_url?: string };
+    footer?: { text: string; icon_url?: string };
+    image?: { url: string };
+    thumbnail?: { url: string };
+    fields?: Array<{ name: string; value: string; inline?: boolean }>;
+    timestamp?: string;
+  }
+
+  /**
+   * Builds an embed payload from input
+   */
+  function buildEmbedPayload(embed: {
+    title?: string;
+    description?: string;
+    url?: string;
+    color?: number;
+    image?: string;
+    thumbnail?: string;
+    author?: { name: string; url?: string; iconURL?: string };
+    footer?: { text: string; iconURL?: string };
+    fields?: Array<{ name: string; value: string; inline?: boolean }>;
+    timestamp?: boolean;
+  }): EmbedPayload {
+    return {
+      ...(embed.title && { title: embed.title }),
+      ...(embed.description && { description: embed.description }),
+      ...(embed.url && { url: embed.url }),
+      ...(embed.color !== undefined && { color: embed.color }),
+      ...(embed.author && {
+        author: { name: embed.author.name, url: embed.author.url, icon_url: embed.author.iconURL },
+      }),
+      ...(embed.footer && { footer: { text: embed.footer.text, icon_url: embed.footer.iconURL } }),
+      ...(embed.image && { image: { url: embed.image } }),
+      ...(embed.thumbnail && { thumbnail: { url: embed.thumbnail } }),
+      ...(embed.fields && { fields: embed.fields }),
+      ...(embed.timestamp && { timestamp: new Date().toISOString() }),
+    };
+  }
+
+  /**
+   * Formats a message for API response
+   */
+  function formatMessage(msg: Message) {
+    return {
+      id: msg.id,
+      content: msg.content,
+      author: {
+        id: msg.author.id,
+        username: msg.author.username,
+        discriminator: msg.author.discriminator,
+        bot: msg.author.bot,
+        avatar: msg.author.avatar,
+      },
+      timestamp: msg.createdAt.toISOString(),
+      editedTimestamp: msg.editedAt?.toISOString() || null,
+      attachments: msg.attachments.map((att) => ({
+        id: att.id,
+        filename: att.name,
+        size: att.size,
+        url: att.url,
+        contentType: att.contentType || undefined,
+      })),
+      embeds: msg.embeds.map((embed) => ({
+        title: embed.title || undefined,
+        description: embed.description || undefined,
+        url: embed.url || undefined,
+        color: embed.color || undefined,
+        timestamp: embed.timestamp ? new Date(embed.timestamp).toISOString() : undefined,
+      })),
+      reactions: msg.reactions.cache.map((reaction) => ({
+        emoji: reaction.emoji.name || reaction.emoji.id || "",
+        count: reaction.count,
+        me: reaction.me,
+      })),
+    };
+  }
+
   // Send Message Tool
   server.registerTool(
     "send_message",
@@ -24,11 +178,7 @@ export function registerMessagingTools(
       inputSchema: {
         channelId: z.string().describe("Channel ID (snowflake) or name"),
         content: z.string().max(2000).describe("Message content"),
-        embeds: z
-          .array(embedSchema)
-          .max(10)
-          .optional()
-          .describe("Optional embeds (max 10)"),
+        embeds: z.array(embedSchema).max(10).optional().describe("Optional embeds (max 10)"),
       },
       outputSchema: {
         success: z.boolean(),
@@ -41,30 +191,9 @@ export function registerMessagingTools(
     async ({ channelId, content, embeds }) => {
       try {
         const client = discordManager.getClient();
+        const channel = await fetchTextChannel(client, channelId);
+        checkSendPermissions(channel, client);
 
-        // Resolve channel
-        const channel = await client.channels
-          .fetch(channelId)
-          .catch(() => null);
-        if (!channel || !channel.isTextBased()) {
-          throw new ChannelNotFoundError(channelId);
-        }
-
-        // Check permissions
-        if ("guild" in channel && channel.guild) {
-          const permissions = channel.permissionsFor(client.user!);
-          if (!permissions?.has(PermissionFlagsBits.SendMessages)) {
-            throw new PermissionDeniedError("SendMessages", channelId);
-          }
-          if (
-            channel.isThread() &&
-            !permissions?.has(PermissionFlagsBits.SendMessagesInThreads)
-          ) {
-            throw new PermissionDeniedError("SendMessagesInThreads", channelId);
-          }
-        }
-
-        // Send message (type narrowing for send method)
         if (!("send" in channel)) {
           throw new ChannelNotFoundError(channelId);
         }
@@ -92,25 +221,21 @@ export function registerMessagingTools(
           ],
           structuredContent: output,
         };
-      } catch (error: any) {
+      } catch (error) {
+        const errorMsg = getErrorMessage(error);
         logger.error("Failed to send message", {
-          error: error.message,
+          error: errorMsg,
           channelId,
         });
-
-        const output = {
-          success: false,
-          error: error.message,
-        };
 
         return {
           content: [
             {
               type: "text" as const,
-              text: `Failed to send message: ${error.message}`,
+              text: `Failed to send message: ${errorMsg}`,
             },
           ],
-          structuredContent: output,
+          structuredContent: { success: false, error: errorMsg },
           isError: true,
         };
       }
@@ -132,14 +257,8 @@ export function registerMessagingTools(
           .max(100)
           .default(50)
           .describe("Number of messages to retrieve"),
-        before: z
-          .string()
-          .optional()
-          .describe("Get messages before this message ID"),
-        after: z
-          .string()
-          .optional()
-          .describe("Get messages after this message ID"),
+        before: z.string().optional().describe("Get messages before this message ID"),
+        after: z.string().optional().describe("Get messages after this message ID"),
       },
       outputSchema: {
         success: z.boolean(),
@@ -151,66 +270,17 @@ export function registerMessagingTools(
     async ({ channelId, limit, before, after }) => {
       try {
         const client = discordManager.getClient();
+        const channel = await fetchTextChannel(client, channelId);
+        checkChannelPermission(channel, client, PermissionFlagsBits.ViewChannel, "ViewChannel");
+        checkChannelPermission(
+          channel,
+          client,
+          PermissionFlagsBits.ReadMessageHistory,
+          "ReadMessageHistory",
+        );
 
-        const channel = await client.channels
-          .fetch(channelId)
-          .catch(() => null);
-        if (!channel || !channel.isTextBased()) {
-          throw new ChannelNotFoundError(channelId);
-        }
-
-        // Check permissions
-        if ("guild" in channel && channel.guild) {
-          const permissions = channel.permissionsFor(client.user!);
-          if (!permissions?.has(PermissionFlagsBits.ViewChannel)) {
-            throw new PermissionDeniedError("ViewChannel", channelId);
-          }
-          if (!permissions?.has(PermissionFlagsBits.ReadMessageHistory)) {
-            throw new PermissionDeniedError("ReadMessageHistory", channelId);
-          }
-        }
-
-        // Fetch messages
-        const messages = await channel.messages.fetch({
-          limit,
-          before,
-          after,
-        });
-
-        const formattedMessages = messages.map((msg) => ({
-          id: msg.id,
-          content: msg.content,
-          author: {
-            id: msg.author.id,
-            username: msg.author.username,
-            discriminator: msg.author.discriminator,
-            bot: msg.author.bot,
-            avatar: msg.author.avatar,
-          },
-          timestamp: msg.createdAt.toISOString(),
-          editedTimestamp: msg.editedAt?.toISOString() || null,
-          attachments: msg.attachments.map((att) => ({
-            id: att.id,
-            filename: att.name,
-            size: att.size,
-            url: att.url,
-            contentType: att.contentType || undefined,
-          })),
-          embeds: msg.embeds.map((embed) => ({
-            title: embed.title || undefined,
-            description: embed.description || undefined,
-            url: embed.url || undefined,
-            color: embed.color || undefined,
-            timestamp: embed.timestamp
-              ? new Date(embed.timestamp).toISOString()
-              : undefined,
-          })),
-          reactions: msg.reactions.cache.map((reaction) => ({
-            emoji: reaction.emoji.name || reaction.emoji.id || "",
-            count: reaction.count,
-            me: reaction.me,
-          })),
-        }));
+        const messages = await channel.messages.fetch({ limit, before, after });
+        const formattedMessages = messages.map(formatMessage);
 
         const output = {
           success: true,
@@ -229,25 +299,18 @@ export function registerMessagingTools(
           ],
           structuredContent: output,
         };
-      } catch (error: any) {
-        logger.error("Failed to read messages", {
-          error: error.message,
-          channelId,
-        });
-
-        const output = {
-          success: false,
-          error: error.message,
-        };
+      } catch (error) {
+        const errorMsg = getErrorMessage(error);
+        logger.error("Failed to read messages", { error: errorMsg, channelId });
 
         return {
           content: [
             {
               type: "text" as const,
-              text: `Failed to read messages: ${error.message}`,
+              text: `Failed to read messages: ${errorMsg}`,
             },
           ],
-          structuredContent: output,
+          structuredContent: { success: false, error: errorMsg },
           isError: true,
         };
       }
@@ -263,10 +326,7 @@ export function registerMessagingTools(
       inputSchema: {
         channelId: z.string().describe("Channel ID"),
         messageId: z.string().describe("Message ID to delete"),
-        reason: z
-          .string()
-          .optional()
-          .describe("Reason for deletion (audit log)"),
+        reason: z.string().optional().describe("Reason for deletion (audit log)"),
       },
       outputSchema: {
         success: z.boolean(),
@@ -277,37 +337,20 @@ export function registerMessagingTools(
     async ({ channelId, messageId, reason }) => {
       try {
         const client = discordManager.getClient();
-
-        const channel = await client.channels
-          .fetch(channelId)
-          .catch(() => null);
-        if (!channel || !channel.isTextBased()) {
-          throw new ChannelNotFoundError(channelId);
-        }
-
-        const message = await channel.messages
-          .fetch(messageId)
-          .catch(() => null);
-        if (!message) {
-          throw new MessageNotFoundError(messageId);
-        }
+        const channel = await fetchTextChannel(client, channelId);
+        const message = await fetchMessage(channel, messageId, channelId);
 
         // Check permissions (bot can always delete own messages)
-        if (message.author.id !== client.user!.id) {
-          if ("guild" in channel && channel.guild) {
-            const permissions = channel.permissionsFor(client.user!);
-            if (!permissions?.has(PermissionFlagsBits.ManageMessages)) {
-              throw new PermissionDeniedError("ManageMessages", channelId);
-            }
-          }
+        if (message.author.id !== client.user?.id) {
+          checkChannelPermission(
+            channel,
+            client,
+            PermissionFlagsBits.ManageMessages,
+            "ManageMessages",
+          );
         }
 
         await message.delete();
-
-        const output = {
-          success: true,
-          deletedMessageId: messageId,
-        };
 
         logger.info("Message deleted", { channelId, messageId, reason });
 
@@ -318,28 +361,20 @@ export function registerMessagingTools(
               text: `Message ${messageId} deleted successfully`,
             },
           ],
-          structuredContent: output,
+          structuredContent: { success: true, deletedMessageId: messageId },
         };
-      } catch (error: any) {
-        logger.error("Failed to delete message", {
-          error: error.message,
-          channelId,
-          messageId,
-        });
-
-        const output = {
-          success: false,
-          error: error.message,
-        };
+      } catch (error) {
+        const errorMsg = getErrorMessage(error);
+        logger.error("Failed to delete message", { error: errorMsg, channelId, messageId });
 
         return {
           content: [
             {
               type: "text" as const,
-              text: `Failed to delete message: ${error.message}`,
+              text: `Failed to delete message: ${errorMsg}`,
             },
           ],
-          structuredContent: output,
+          structuredContent: { success: false, error: errorMsg },
           isError: true,
         };
       }
@@ -355,9 +390,7 @@ export function registerMessagingTools(
       inputSchema: {
         channelId: z.string().describe("Channel ID"),
         messageId: z.string().describe("Message ID"),
-        emoji: z
-          .string()
-          .describe("Unicode emoji or custom emoji format (name:id)"),
+        emoji: z.string().describe("Unicode emoji or custom emoji format (name:id)"),
       },
       outputSchema: {
         success: z.boolean(),
@@ -367,65 +400,25 @@ export function registerMessagingTools(
     async ({ channelId, messageId, emoji }) => {
       try {
         const client = discordManager.getClient();
-
-        const channel = await client.channels
-          .fetch(channelId)
-          .catch(() => null);
-        if (!channel || !channel.isTextBased()) {
-          throw new ChannelNotFoundError(channelId);
-        }
-
-        const message = await channel.messages
-          .fetch(messageId)
-          .catch(() => null);
-        if (!message) {
-          throw new MessageNotFoundError(messageId);
-        }
-
-        // Check permissions
-        if ("guild" in channel && channel.guild) {
-          const permissions = channel.permissionsFor(client.user!);
-          if (!permissions?.has(PermissionFlagsBits.AddReactions)) {
-            throw new PermissionDeniedError("AddReactions", channelId);
-          }
-        }
+        const channel = await fetchTextChannel(client, channelId);
+        const message = await fetchMessage(channel, messageId, channelId);
+        checkChannelPermission(channel, client, PermissionFlagsBits.AddReactions, "AddReactions");
 
         await message.react(emoji);
-
-        const output = { success: true };
 
         logger.info("Reaction added", { channelId, messageId, emoji });
 
         return {
-          content: [
-            {
-              type: "text" as const,
-              text: `Reaction ${emoji} added to message`,
-            },
-          ],
-          structuredContent: output,
+          content: [{ type: "text" as const, text: `Reaction ${emoji} added to message` }],
+          structuredContent: { success: true },
         };
-      } catch (error: any) {
-        logger.error("Failed to add reaction", {
-          error: error.message,
-          channelId,
-          messageId,
-          emoji,
-        });
-
-        const output = {
-          success: false,
-          error: error.message,
-        };
+      } catch (error) {
+        const errorMsg = getErrorMessage(error);
+        logger.error("Failed to add reaction", { error: errorMsg, channelId, messageId, emoji });
 
         return {
-          content: [
-            {
-              type: "text" as const,
-              text: `Failed to add reaction: ${error.message}`,
-            },
-          ],
-          structuredContent: output,
+          content: [{ type: "text" as const, text: `Failed to add reaction: ${errorMsg}` }],
+          structuredContent: { success: false, error: errorMsg },
           isError: true,
         };
       }
@@ -441,16 +434,8 @@ export function registerMessagingTools(
       inputSchema: {
         channelId: z.string().describe("Channel ID"),
         messageId: z.string().describe("Message ID to edit"),
-        content: z
-          .string()
-          .max(2000)
-          .optional()
-          .describe("New message content"),
-        embeds: z
-          .array(embedSchema)
-          .max(10)
-          .optional()
-          .describe("New embeds (max 10)"),
+        content: z.string().max(2000).optional().describe("New message content"),
+        embeds: z.array(embedSchema).max(10).optional().describe("New embeds (max 10)"),
       },
       outputSchema: {
         success: z.boolean(),
@@ -462,71 +447,36 @@ export function registerMessagingTools(
     async ({ channelId, messageId, content, embeds }) => {
       try {
         const client = discordManager.getClient();
-
-        const channel = await client.channels
-          .fetch(channelId)
-          .catch(() => null);
-        if (!channel || !channel.isTextBased()) {
-          throw new ChannelNotFoundError(channelId);
-        }
-
-        const message = await channel.messages
-          .fetch(messageId)
-          .catch(() => null);
-        if (!message) {
-          throw new MessageNotFoundError(messageId);
-        }
+        const channel = await fetchTextChannel(client, channelId);
+        const message = await fetchMessage(channel, messageId, channelId);
 
         // Check if message was sent by the bot
-        if (message.author.id !== client.user!.id) {
-          throw new Error(
-            "Can only edit messages sent by the bot. This message belongs to another user.",
-          );
+        if (message.author.id !== client.user?.id) {
+          throw new Error("Can only edit messages sent by the bot.");
         }
 
-        // Edit message
         const editedMessage = await message.edit({
           content: content || message.content,
           embeds: embeds || message.embeds,
         });
 
-        const output = {
-          success: true,
-          messageId: editedMessage.id,
-          editedTimestamp: editedMessage.editedAt?.toISOString(),
-        };
-
         logger.info("Message edited", { channelId, messageId });
 
         return {
-          content: [
-            {
-              type: "text" as const,
-              text: `Message ${messageId} edited successfully`,
-            },
-          ],
-          structuredContent: output,
+          content: [{ type: "text" as const, text: `Message ${messageId} edited successfully` }],
+          structuredContent: {
+            success: true,
+            messageId: editedMessage.id,
+            editedTimestamp: editedMessage.editedAt?.toISOString(),
+          },
         };
-      } catch (error: any) {
-        logger.error("Failed to edit message", {
-          error: error.message,
-          channelId,
-          messageId,
-        });
-
-        const output = {
-          success: false,
-          error: error.message,
-        };
+      } catch (error) {
+        const errorMsg = getErrorMessage(error);
+        logger.error("Failed to edit message", { error: errorMsg, channelId, messageId });
 
         return {
-          content: [
-            {
-              type: "text" as const,
-              text: `Failed to edit message: ${error.message}`,
-            },
-          ],
-          structuredContent: output,
+          content: [{ type: "text" as const, text: `Failed to edit message: ${errorMsg}` }],
+          structuredContent: { success: false, error: errorMsg },
           isError: true,
         };
       }
@@ -550,14 +500,8 @@ export function registerMessagingTools(
         fileName: z
           .string()
           .optional()
-          .describe(
-            "Custom filename (optional, uses original if not provided)",
-          ),
-        embeds: z
-          .array(embedSchema)
-          .max(10)
-          .optional()
-          .describe("Optional embeds (max 10)"),
+          .describe("Custom filename (optional, uses original if not provided)"),
+        embeds: z.array(embedSchema).max(10).optional().describe("Optional embeds (max 10)"),
       },
       outputSchema: {
         success: z.boolean(),
@@ -571,48 +515,17 @@ export function registerMessagingTools(
     async ({ channelId, content, filePath, fileName, embeds }) => {
       try {
         const client = discordManager.getClient();
+        const channel = await fetchTextChannel(client, channelId);
+        checkSendPermissions(channel, client);
+        checkChannelPermission(channel, client, PermissionFlagsBits.AttachFiles, "AttachFiles");
 
-        // Resolve channel
-        const channel = await client.channels
-          .fetch(channelId)
-          .catch(() => null);
-        if (!channel || !channel.isTextBased()) {
-          throw new ChannelNotFoundError(channelId);
-        }
-
-        // Check permissions
-        if ("guild" in channel && channel.guild) {
-          const permissions = channel.permissionsFor(client.user!);
-          if (!permissions?.has(PermissionFlagsBits.SendMessages)) {
-            throw new PermissionDeniedError("SendMessages", channelId);
-          }
-          if (!permissions?.has(PermissionFlagsBits.AttachFiles)) {
-            throw new PermissionDeniedError("AttachFiles", channelId);
-          }
-          if (
-            channel.isThread() &&
-            !permissions?.has(PermissionFlagsBits.SendMessagesInThreads)
-          ) {
-            throw new PermissionDeniedError("SendMessagesInThreads", channelId);
-          }
-        }
-
-        // Import fs module dynamically
         const fs = await import("fs");
         const path = await import("path");
 
-        // Check if file exists
         if (!fs.existsSync(filePath)) {
           throw new Error(`File not found: ${filePath}`);
         }
 
-        // Prepare attachment
-        const attachment = {
-          attachment: filePath,
-          name: fileName || path.basename(filePath),
-        };
-
-        // Send message (type narrowing for send method)
         if (!("send" in channel)) {
           throw new ChannelNotFoundError(channelId);
         }
@@ -620,55 +533,32 @@ export function registerMessagingTools(
         const message = await channel.send({
           content: content || undefined,
           embeds: embeds || [],
-          files: [attachment],
+          files: [{ attachment: filePath, name: fileName || path.basename(filePath) }],
         });
 
-        const attachmentUrl =
-          message.attachments.first()?.url || "No attachment URL";
+        const attachmentUrl = message.attachments.first()?.url || "No attachment URL";
 
-        const output = {
-          success: true,
-          messageId: message.id,
-          channelId: channel.id,
-          timestamp: message.createdAt.toISOString(),
-          attachmentUrl,
+        logger.info("Message with file sent", { channelId, messageId: message.id, filePath });
+
+        return {
+          content: [{ type: "text" as const, text: `Message with file sent to <#${channel.id}>` }],
+          structuredContent: {
+            success: true,
+            messageId: message.id,
+            channelId: channel.id,
+            timestamp: message.createdAt.toISOString(),
+            attachmentUrl,
+          },
         };
-
-        logger.info("Message with file sent", {
-          channelId,
-          messageId: message.id,
-          filePath,
-        });
+      } catch (error) {
+        const errorMsg = getErrorMessage(error);
+        logger.error("Failed to send message with file", { error: errorMsg, channelId, filePath });
 
         return {
           content: [
-            {
-              type: "text" as const,
-              text: `Message with file sent successfully to <#${channel.id}>`,
-            },
+            { type: "text" as const, text: `Failed to send message with file: ${errorMsg}` },
           ],
-          structuredContent: output,
-        };
-      } catch (error: any) {
-        logger.error("Failed to send message with file", {
-          error: error.message,
-          channelId,
-          filePath,
-        });
-
-        const output = {
-          success: false,
-          error: error.message,
-        };
-
-        return {
-          content: [
-            {
-              type: "text" as const,
-              text: `Failed to send message with file: ${error.message}`,
-            },
-          ],
-          structuredContent: output,
+          structuredContent: { success: false, error: errorMsg },
           isError: true,
         };
       }
@@ -684,10 +574,7 @@ export function registerMessagingTools(
       inputSchema: {
         channelId: z.string().describe("Channel ID"),
         messageId: z.string().describe("Message ID to pin"),
-        reason: z
-          .string()
-          .optional()
-          .describe("Reason for pinning (audit log)"),
+        reason: z.string().optional().describe("Reason for pinning (audit log)"),
       },
       outputSchema: {
         success: z.boolean(),
@@ -698,67 +585,30 @@ export function registerMessagingTools(
     async ({ channelId, messageId, reason }) => {
       try {
         const client = discordManager.getClient();
-
-        const channel = await client.channels
-          .fetch(channelId)
-          .catch(() => null);
-        if (!channel || !channel.isTextBased()) {
-          throw new ChannelNotFoundError(channelId);
-        }
-
-        const message = await channel.messages
-          .fetch(messageId)
-          .catch(() => null);
-        if (!message) {
-          throw new MessageNotFoundError(messageId);
-        }
-
-        // Check permissions
-        if ("guild" in channel && channel.guild) {
-          const permissions = channel.permissionsFor(client.user!);
-          if (!permissions?.has(PermissionFlagsBits.ManageMessages)) {
-            throw new PermissionDeniedError("ManageMessages", channelId);
-          }
-        }
+        const channel = await fetchTextChannel(client, channelId);
+        const message = await fetchMessage(channel, messageId, channelId);
+        checkChannelPermission(
+          channel,
+          client,
+          PermissionFlagsBits.ManageMessages,
+          "ManageMessages",
+        );
 
         await message.pin(reason);
-
-        const output = {
-          success: true,
-          pinnedMessageId: messageId,
-        };
 
         logger.info("Message pinned", { channelId, messageId, reason });
 
         return {
-          content: [
-            {
-              type: "text" as const,
-              text: `Message ${messageId} pinned successfully`,
-            },
-          ],
-          structuredContent: output,
+          content: [{ type: "text" as const, text: `Message ${messageId} pinned successfully` }],
+          structuredContent: { success: true, pinnedMessageId: messageId },
         };
-      } catch (error: any) {
-        logger.error("Failed to pin message", {
-          error: error.message,
-          channelId,
-          messageId,
-        });
-
-        const output = {
-          success: false,
-          error: error.message,
-        };
+      } catch (error) {
+        const errorMsg = getErrorMessage(error);
+        logger.error("Failed to pin message", { error: errorMsg, channelId, messageId });
 
         return {
-          content: [
-            {
-              type: "text" as const,
-              text: `Failed to pin message: ${error.message}`,
-            },
-          ],
-          structuredContent: output,
+          content: [{ type: "text" as const, text: `Failed to pin message: ${errorMsg}` }],
+          structuredContent: { success: false, error: errorMsg },
           isError: true,
         };
       }
@@ -793,11 +643,7 @@ export function registerMessagingTools(
               .max(0xffffff)
               .optional()
               .describe("Hex color as integer (e.g., 0x00ff00 for green)"),
-            image: z
-              .string()
-              .url()
-              .optional()
-              .describe("Large image URL at bottom of embed"),
+            image: z.string().url().optional().describe("Large image URL at bottom of embed"),
             thumbnail: z
               .string()
               .url()
@@ -842,123 +688,37 @@ export function registerMessagingTools(
     async ({ channelId, content, embed }) => {
       try {
         const client = discordManager.getClient();
-
-        // Resolve channel
-        const channel = await client.channels
-          .fetch(channelId)
-          .catch(() => null);
-        if (!channel || !channel.isTextBased()) {
-          throw new ChannelNotFoundError(channelId);
-        }
-
-        // Check permissions
-        if ("guild" in channel && channel.guild) {
-          const permissions = channel.permissionsFor(client.user!);
-          if (!permissions?.has(PermissionFlagsBits.SendMessages)) {
-            throw new PermissionDeniedError("SendMessages", channelId);
-          }
-          if (embed && !permissions?.has(PermissionFlagsBits.EmbedLinks)) {
-            throw new PermissionDeniedError("EmbedLinks", channelId);
-          }
-          if (
-            channel.isThread() &&
-            !permissions?.has(PermissionFlagsBits.SendMessagesInThreads)
-          ) {
-            throw new PermissionDeniedError("SendMessagesInThreads", channelId);
-          }
-        }
-
-        // Build embed if provided
-        let embedPayload: any[] = [];
+        const channel = await fetchTextChannel(client, channelId);
+        checkSendPermissions(channel, client);
         if (embed) {
-          const embedObj: any = {};
-
-          if (embed.title) embedObj.title = embed.title;
-          if (embed.description) embedObj.description = embed.description;
-          if (embed.url) embedObj.url = embed.url;
-          if (embed.color !== undefined) embedObj.color = embed.color;
-
-          if (embed.author) {
-            embedObj.author = {
-              name: embed.author.name,
-              url: embed.author.url,
-              icon_url: embed.author.iconURL,
-            };
-          }
-
-          if (embed.footer) {
-            embedObj.footer = {
-              text: embed.footer.text,
-              icon_url: embed.footer.iconURL,
-            };
-          }
-
-          if (embed.image) {
-            embedObj.image = { url: embed.image };
-          }
-
-          if (embed.thumbnail) {
-            embedObj.thumbnail = { url: embed.thumbnail };
-          }
-
-          if (embed.fields) {
-            embedObj.fields = embed.fields;
-          }
-
-          if (embed.timestamp) {
-            embedObj.timestamp = new Date().toISOString();
-          }
-
-          embedPayload = [embedObj];
+          checkChannelPermission(channel, client, PermissionFlagsBits.EmbedLinks, "EmbedLinks");
         }
 
-        // Send message (type narrowing for send method)
         if (!("send" in channel)) {
           throw new ChannelNotFoundError(channelId);
         }
 
-        const message = await channel.send({
-          content: content || undefined,
-          embeds: embedPayload,
-        });
-
-        const output = {
-          success: true,
-          messageId: message.id,
-          channelId: channel.id,
-          timestamp: message.createdAt.toISOString(),
-        };
+        const embedPayload = embed ? [buildEmbedPayload(embed)] : [];
+        const message = await channel.send({ content: content || undefined, embeds: embedPayload });
 
         logger.info("Rich message sent", { channelId, messageId: message.id });
 
         return {
-          content: [
-            {
-              type: "text" as const,
-              text: `Rich message sent successfully to <#${channel.id}>`,
-            },
-          ],
-          structuredContent: output,
+          content: [{ type: "text" as const, text: `Rich message sent to <#${channel.id}>` }],
+          structuredContent: {
+            success: true,
+            messageId: message.id,
+            channelId: channel.id,
+            timestamp: message.createdAt.toISOString(),
+          },
         };
-      } catch (error: any) {
-        logger.error("Failed to send rich message", {
-          error: error.message,
-          channelId,
-        });
-
-        const output = {
-          success: false,
-          error: error.message,
-        };
+      } catch (error) {
+        const errorMsg = getErrorMessage(error);
+        logger.error("Failed to send rich message", { error: errorMsg, channelId });
 
         return {
-          content: [
-            {
-              type: "text" as const,
-              text: `Failed to send rich message: ${error.message}`,
-            },
-          ],
-          structuredContent: output,
+          content: [{ type: "text" as const, text: `Failed to send rich message: ${errorMsg}` }],
+          structuredContent: { success: false, error: errorMsg },
           isError: true,
         };
       }
@@ -974,10 +734,7 @@ export function registerMessagingTools(
       inputSchema: {
         channelId: z.string().describe("Channel ID"),
         messageId: z.string().describe("Message ID to unpin"),
-        reason: z
-          .string()
-          .optional()
-          .describe("Reason for unpinning (audit log)"),
+        reason: z.string().optional().describe("Reason for unpinning (audit log)"),
       },
       outputSchema: {
         success: z.boolean(),
@@ -988,67 +745,30 @@ export function registerMessagingTools(
     async ({ channelId, messageId, reason }) => {
       try {
         const client = discordManager.getClient();
-
-        const channel = await client.channels
-          .fetch(channelId)
-          .catch(() => null);
-        if (!channel || !channel.isTextBased()) {
-          throw new ChannelNotFoundError(channelId);
-        }
-
-        const message = await channel.messages
-          .fetch(messageId)
-          .catch(() => null);
-        if (!message) {
-          throw new MessageNotFoundError(messageId);
-        }
-
-        // Check permissions
-        if ("guild" in channel && channel.guild) {
-          const permissions = channel.permissionsFor(client.user!);
-          if (!permissions?.has(PermissionFlagsBits.ManageMessages)) {
-            throw new PermissionDeniedError("ManageMessages", channelId);
-          }
-        }
+        const channel = await fetchTextChannel(client, channelId);
+        const message = await fetchMessage(channel, messageId, channelId);
+        checkChannelPermission(
+          channel,
+          client,
+          PermissionFlagsBits.ManageMessages,
+          "ManageMessages",
+        );
 
         await message.unpin(reason);
-
-        const output = {
-          success: true,
-          unpinnedMessageId: messageId,
-        };
 
         logger.info("Message unpinned", { channelId, messageId, reason });
 
         return {
-          content: [
-            {
-              type: "text" as const,
-              text: `Message ${messageId} unpinned successfully`,
-            },
-          ],
-          structuredContent: output,
+          content: [{ type: "text" as const, text: `Message ${messageId} unpinned successfully` }],
+          structuredContent: { success: true, unpinnedMessageId: messageId },
         };
-      } catch (error: any) {
-        logger.error("Failed to unpin message", {
-          error: error.message,
-          channelId,
-          messageId,
-        });
-
-        const output = {
-          success: false,
-          error: error.message,
-        };
+      } catch (error) {
+        const errorMsg = getErrorMessage(error);
+        logger.error("Failed to unpin message", { error: errorMsg, channelId, messageId });
 
         return {
-          content: [
-            {
-              type: "text" as const,
-              text: `Failed to unpin message: ${error.message}`,
-            },
-          ],
-          structuredContent: output,
+          content: [{ type: "text" as const, text: `Failed to unpin message: ${errorMsg}` }],
+          structuredContent: { success: false, error: errorMsg },
           isError: true,
         };
       }
@@ -1101,24 +821,8 @@ export function registerMessagingTools(
     async ({ channelId, messageId }) => {
       try {
         const client = discordManager.getClient();
-
-        const channel = await client.channels
-          .fetch(channelId)
-          .catch(() => null);
-        if (!channel || !channel.isTextBased()) {
-          throw new ChannelNotFoundError(channelId);
-        }
-
-        if (!("messages" in channel)) {
-          throw new ChannelNotFoundError(channelId);
-        }
-
-        const message = await channel.messages
-          .fetch(messageId)
-          .catch(() => null);
-        if (!message) {
-          throw new MessageNotFoundError(messageId);
-        }
+        const channel = await fetchTextChannel(client, channelId);
+        const message = await fetchMessage(channel, messageId, channelId);
 
         const messageData = {
           id: message.id,
@@ -1143,37 +847,21 @@ export function registerMessagingTools(
           pinned: message.pinned,
         };
 
-        const output = {
-          success: true,
-          message: messageData,
-        };
-
         logger.info("Message retrieved", { channelId, messageId });
 
+        const preview =
+          message.content.substring(0, 200) + (message.content.length > 200 ? "..." : "");
         return {
-          content: [
-            {
-              type: "text" as const,
-              text: `**${message.author.username}**: ${message.content.substring(0, 200)}${message.content.length > 200 ? "..." : ""}`,
-            },
-          ],
-          structuredContent: output,
+          content: [{ type: "text" as const, text: `**${message.author.username}**: ${preview}` }],
+          structuredContent: { success: true, message: messageData },
         };
-      } catch (error: any) {
-        logger.error("Failed to get message", {
-          error: error.message,
-          channelId,
-          messageId,
-        });
+      } catch (error) {
+        const errorMsg = getErrorMessage(error);
+        logger.error("Failed to get message", { error: errorMsg, channelId, messageId });
 
         return {
-          content: [
-            {
-              type: "text" as const,
-              text: `Failed to get message: ${error.message}`,
-            },
-          ],
-          structuredContent: { success: false, error: error.message },
+          content: [{ type: "text" as const, text: `Failed to get message: ${errorMsg}` }],
+          structuredContent: { success: false, error: errorMsg },
           isError: true,
         };
       }
@@ -1206,74 +894,30 @@ export function registerMessagingTools(
     async ({ channelId, messageId, content, mention = true }) => {
       try {
         const client = discordManager.getClient();
-
-        const channel = await client.channels
-          .fetch(channelId)
-          .catch(() => null);
-        if (!channel || !channel.isTextBased()) {
-          throw new ChannelNotFoundError(channelId);
-        }
-
-        if (!("messages" in channel) || !("send" in channel)) {
-          throw new ChannelNotFoundError(channelId);
-        }
-
-        const originalMessage = await channel.messages
-          .fetch(messageId)
-          .catch(() => null);
-        if (!originalMessage) {
-          throw new MessageNotFoundError(messageId);
-        }
-
-        // Check permissions
-        if ("guild" in channel && channel.guild) {
-          const permissions = channel.permissionsFor(client.user!);
-          if (!permissions?.has(PermissionFlagsBits.SendMessages)) {
-            throw new PermissionDeniedError("SendMessages", channelId);
-          }
-        }
+        const channel = await fetchTextChannel(client, channelId);
+        const originalMessage = await fetchMessage(channel, messageId, channelId);
+        checkSendPermissions(channel, client);
 
         const reply = await originalMessage.reply({
           content,
           allowedMentions: { repliedUser: mention },
         });
 
-        const output = {
-          success: true,
-          messageId: reply.id,
-          replyToId: messageId,
-        };
-
-        logger.info("Reply sent", {
-          channelId,
-          messageId: reply.id,
-          replyToId: messageId,
-        });
+        logger.info("Reply sent", { channelId, messageId: reply.id, replyToId: messageId });
 
         return {
           content: [
-            {
-              type: "text" as const,
-              text: `Replied to message ${messageId} successfully`,
-            },
+            { type: "text" as const, text: `Replied to message ${messageId} successfully` },
           ],
-          structuredContent: output,
+          structuredContent: { success: true, messageId: reply.id, replyToId: messageId },
         };
-      } catch (error: any) {
-        logger.error("Failed to reply to message", {
-          error: error.message,
-          channelId,
-          messageId,
-        });
+      } catch (error) {
+        const errorMsg = getErrorMessage(error);
+        logger.error("Failed to reply to message", { error: errorMsg, channelId, messageId });
 
         return {
-          content: [
-            {
-              type: "text" as const,
-              text: `Failed to reply: ${error.message}`,
-            },
-          ],
-          structuredContent: { success: false, error: error.message },
+          content: [{ type: "text" as const, text: `Failed to reply: ${errorMsg}` }],
+          structuredContent: { success: false, error: errorMsg },
           isError: true,
         };
       }
@@ -1285,8 +929,7 @@ export function registerMessagingTools(
     "search_messages",
     {
       title: "Search Messages",
-      description:
-        "Search for messages in a channel by content, author, or other criteria",
+      description: "Search for messages in a channel by content, author, or other criteria",
       inputSchema: {
         channelId: z.string().describe("Channel ID to search in"),
         query: z.string().optional().describe("Text to search for in message content"),
@@ -1322,40 +965,22 @@ export function registerMessagingTools(
     async ({ channelId, query, authorId, limit = 25, before, after }) => {
       try {
         const client = discordManager.getClient();
+        const channel = await fetchTextChannel(client, channelId);
 
-        const channel = await client.channels
-          .fetch(channelId)
-          .catch(() => null);
-        if (!channel || !channel.isTextBased()) {
-          throw new ChannelNotFoundError(channelId);
-        }
-
-        if (!("messages" in channel)) {
-          throw new ChannelNotFoundError(channelId);
-        }
-
-        // Fetch messages
-        const fetchOptions: any = { limit };
+        const fetchOptions: { limit: number; before?: string; after?: string } = { limit };
         if (before) fetchOptions.before = before;
         if (after) fetchOptions.after = after;
 
         const messagesResult = await channel.messages.fetch(fetchOptions);
+        const messagesArray: Message[] =
+          messagesResult instanceof Map ? Array.from(messagesResult.values()) : [messagesResult];
 
-        // Handle both single message and collection returns
-        const messagesArray: Message[] = messagesResult instanceof Map
-          ? Array.from(messagesResult.values())
-          : [messagesResult];
-
-        // Filter messages
+        // Filter messages by query and author
         let filtered = messagesArray;
-
         if (query) {
           const lowerQuery = query.toLowerCase();
-          filtered = filtered.filter((m) =>
-            m.content.toLowerCase().includes(lowerQuery),
-          );
+          filtered = filtered.filter((m) => m.content.toLowerCase().includes(lowerQuery));
         }
-
         if (authorId) {
           filtered = filtered.filter((m) => m.author.id === authorId);
         }
@@ -1368,41 +993,20 @@ export function registerMessagingTools(
           timestamp: m.createdAt.toISOString(),
         }));
 
-        const output = {
-          success: true,
-          messages: results,
-          totalFound: results.length,
-        };
+        logger.info("Messages searched", { channelId, query, found: results.length });
 
-        logger.info("Messages searched", {
-          channelId,
-          query,
-          found: results.length,
-        });
+        const text = `Found ${results.length} message(s)${query ? ` matching "${query}"` : ""}`;
+        return {
+          content: [{ type: "text" as const, text }],
+          structuredContent: { success: true, messages: results, totalFound: results.length },
+        };
+      } catch (error) {
+        const errorMsg = getErrorMessage(error);
+        logger.error("Failed to search messages", { error: errorMsg, channelId });
 
         return {
-          content: [
-            {
-              type: "text" as const,
-              text: `Found ${results.length} message(s)${query ? ` matching "${query}"` : ""}`,
-            },
-          ],
-          structuredContent: output,
-        };
-      } catch (error: any) {
-        logger.error("Failed to search messages", {
-          error: error.message,
-          channelId,
-        });
-
-        return {
-          content: [
-            {
-              type: "text" as const,
-              text: `Failed to search messages: ${error.message}`,
-            },
-          ],
-          structuredContent: { success: false, error: error.message },
+          content: [{ type: "text" as const, text: `Failed to search messages: ${errorMsg}` }],
+          structuredContent: { success: false, error: errorMsg },
           isError: true,
         };
       }

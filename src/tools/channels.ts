@@ -1,19 +1,58 @@
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { DiscordClientManager } from "../discord/client.js";
-import { Logger } from "../utils/logger.js";
-import { z } from "zod";
 import {
-  PermissionDeniedError,
+  ChannelType,
+  type GuildChannel,
+  PermissionFlagsBits,
+  type TextChannel,
+  type VoiceChannel,
+} from "discord.js";
+import { z } from "zod";
+import type { DiscordClientManager } from "../discord/client.js";
+import {
   ChannelNotFoundError,
   GuildNotFoundError,
+  PermissionDeniedError,
 } from "../errors/discord.js";
-import { ChannelType, PermissionFlagsBits } from "discord.js";
+import type { ToolRegistrationTarget } from "../registry/tool-adapter.js";
+import { getErrorMessage } from "../utils/errors.js";
+import type { Logger } from "../utils/logger.js";
 
 export function registerChannelTools(
-  server: McpServer,
+  server: ToolRegistrationTarget,
   discordManager: DiscordClientManager,
   logger: Logger,
 ) {
+  /**
+   * Fetches a channel and validates it's a guild channel
+   */
+  async function fetchGuildChannel(
+    client: ReturnType<typeof discordManager.getClient>,
+    channelId: string,
+  ) {
+    const channel = await client.channels.fetch(channelId).catch(() => null);
+    if (!channel) {
+      throw new ChannelNotFoundError(channelId);
+    }
+    if (!("guild" in channel) || !channel.guild) {
+      throw new Error("This tool only works with server channels");
+    }
+    return channel;
+  }
+
+  /**
+   * Checks if bot has ManageChannels permission
+   */
+  async function checkManageChannelsPermission(channel: {
+    guild: {
+      members: { fetchMe: () => Promise<{ permissions: { has: (p: bigint) => boolean } }> };
+      id: string;
+    };
+  }) {
+    const botMember = await channel.guild.members.fetchMe();
+    if (!botMember.permissions.has(PermissionFlagsBits.ManageChannels)) {
+      throw new PermissionDeniedError("ManageChannels", channel.guild.id);
+    }
+  }
+
   // Create Text Channel Tool
   server.registerTool(
     "create_text_channel",
@@ -23,11 +62,7 @@ export function registerChannelTools(
       inputSchema: {
         guildId: z.string().describe("Guild ID"),
         name: z.string().min(1).max(100).describe("Channel name"),
-        topic: z
-          .string()
-          .max(1024)
-          .optional()
-          .describe("Channel topic/description"),
+        topic: z.string().max(1024).optional().describe("Channel topic/description"),
         parent: z.string().optional().describe("Parent category ID"),
         nsfw: z.boolean().default(false).describe("Mark channel as NSFW"),
       },
@@ -94,23 +129,24 @@ export function registerChannelTools(
           ],
           structuredContent: output,
         };
-      } catch (error: any) {
+      } catch (error) {
+        const errorMsg = getErrorMessage(error);
         logger.error("Failed to create channel", {
-          error: error.message,
+          error: errorMsg,
           guildId,
           name,
         });
 
         const output = {
           success: false,
-          error: error.message,
+          error: errorMsg,
         };
 
         return {
           content: [
             {
               type: "text" as const,
-              text: `Failed to create channel: ${error.message}`,
+              text: `Failed to create channel: ${errorMsg}`,
             },
           ],
           structuredContent: output,
@@ -128,10 +164,7 @@ export function registerChannelTools(
       description: "Permanently delete a Discord channel",
       inputSchema: {
         channelId: z.string().describe("Channel ID to delete"),
-        reason: z
-          .string()
-          .optional()
-          .describe("Reason for deletion (audit log)"),
+        reason: z.string().optional().describe("Reason for deletion (audit log)"),
       },
       outputSchema: {
         success: z.boolean(),
@@ -143,9 +176,7 @@ export function registerChannelTools(
       try {
         const client = discordManager.getClient();
 
-        const channel = await client.channels
-          .fetch(channelId)
-          .catch(() => null);
+        const channel = await client.channels.fetch(channelId).catch(() => null);
         if (!channel) {
           throw new ChannelNotFoundError(channelId);
         }
@@ -176,22 +207,23 @@ export function registerChannelTools(
           ],
           structuredContent: output,
         };
-      } catch (error: any) {
+      } catch (error) {
+        const errorMsg = getErrorMessage(error);
         logger.error("Failed to delete channel", {
-          error: error.message,
+          error: errorMsg,
           channelId,
         });
 
         const output = {
           success: false,
-          error: error.message,
+          error: errorMsg,
         };
 
         return {
           content: [
             {
               type: "text" as const,
-              text: `Failed to delete channel: ${error.message}`,
+              text: `Failed to delete channel: ${errorMsg}`,
             },
           ],
           structuredContent: output,
@@ -261,22 +293,23 @@ export function registerChannelTools(
           ],
           structuredContent: output,
         };
-      } catch (error: any) {
+      } catch (error) {
+        const errorMsg = getErrorMessage(error);
         logger.error("Failed to get server info", {
-          error: error.message,
+          error: errorMsg,
           guildId,
         });
 
         const output = {
           success: false,
-          error: error.message,
+          error: errorMsg,
         };
 
         return {
           content: [
             {
               type: "text" as const,
-              text: `Failed to get server info: ${error.message}`,
+              text: `Failed to get server info: ${errorMsg}`,
             },
           ],
           structuredContent: output,
@@ -353,8 +386,8 @@ export function registerChannelTools(
             id: channel.id,
             name: channel.name,
             type: channel.type,
-            userLimit: (channel as any).userLimit || 0,
-            bitrate: (channel as any).bitrate || 64000,
+            userLimit: (channel as VoiceChannel).userLimit || 0,
+            bitrate: (channel as VoiceChannel).bitrate || 64000,
           },
         };
 
@@ -372,22 +405,23 @@ export function registerChannelTools(
           ],
           structuredContent: output,
         };
-      } catch (error: any) {
+      } catch (error) {
+        const errorMsg = getErrorMessage(error);
         logger.error("Failed to create voice channel", {
-          error: error.message,
+          error: errorMsg,
           guildId,
         });
 
         const output = {
           success: false,
-          error: error.message,
+          error: errorMsg,
         };
 
         return {
           content: [
             {
               type: "text" as const,
-              text: `Failed to create voice channel: ${error.message}`,
+              text: `Failed to create voice channel: ${errorMsg}`,
             },
           ],
           structuredContent: output,
@@ -460,22 +494,23 @@ export function registerChannelTools(
           ],
           structuredContent: output,
         };
-      } catch (error: any) {
+      } catch (error) {
+        const errorMsg = getErrorMessage(error);
         logger.error("Failed to create category", {
-          error: error.message,
+          error: errorMsg,
           guildId,
         });
 
         const output = {
           success: false,
-          error: error.message,
+          error: errorMsg,
         };
 
         return {
           content: [
             {
               type: "text" as const,
-              text: `Failed to create category: ${error.message}`,
+              text: `Failed to create category: ${errorMsg}`,
             },
           ],
           structuredContent: output,
@@ -496,11 +531,7 @@ export function registerChannelTools(
         name: z.string().min(1).max(100).describe("Forum name"),
         topic: z.string().max(1024).optional().describe("Forum description"),
         parent: z.string().optional().describe("Parent category ID"),
-        tags: z
-          .array(z.string())
-          .max(20)
-          .optional()
-          .describe("Forum tags (max 20)"),
+        tags: z.array(z.string()).max(20).optional().describe("Forum tags (max 20)"),
       },
       outputSchema: {
         success: z.boolean(),
@@ -528,9 +559,7 @@ export function registerChannelTools(
           throw new PermissionDeniedError("ManageChannels", guildId);
         }
 
-        const availableTags = tags
-          ? tags.map((tag) => ({ name: tag }))
-          : undefined;
+        const availableTags = tags ? tags.map((tag) => ({ name: tag })) : undefined;
 
         const forum = await guild.channels.create({
           name,
@@ -560,22 +589,23 @@ export function registerChannelTools(
           ],
           structuredContent: output,
         };
-      } catch (error: any) {
+      } catch (error) {
+        const errorMsg = getErrorMessage(error);
         logger.error("Failed to create forum", {
-          error: error.message,
+          error: errorMsg,
           guildId,
         });
 
         const output = {
           success: false,
-          error: error.message,
+          error: errorMsg,
         };
 
         return {
           content: [
             {
               type: "text" as const,
-              text: `Failed to create forum: ${error.message}`,
+              text: `Failed to create forum: ${errorMsg}`,
             },
           ],
           structuredContent: output,
@@ -593,12 +623,7 @@ export function registerChannelTools(
       description: "Update channel name, topic, slowmode, or other settings",
       inputSchema: {
         channelId: z.string().describe("Channel ID to modify"),
-        name: z
-          .string()
-          .min(1)
-          .max(100)
-          .optional()
-          .describe("New channel name"),
+        name: z.string().min(1).max(100).optional().describe("New channel name"),
         topic: z.string().max(1024).optional().describe("New channel topic"),
         nsfw: z.boolean().optional().describe("Mark channel as NSFW"),
         slowmode: z
@@ -608,10 +633,7 @@ export function registerChannelTools(
           .max(21600)
           .optional()
           .describe("Slowmode delay in seconds (0-21600)"),
-        reason: z
-          .string()
-          .optional()
-          .describe("Reason for modification (audit log)"),
+        reason: z.string().optional().describe("Reason for modification (audit log)"),
       },
       outputSchema: {
         success: z.boolean(),
@@ -627,39 +649,23 @@ export function registerChannelTools(
     async ({ channelId, name, topic, nsfw, slowmode, reason }) => {
       try {
         const client = discordManager.getClient();
+        const channel = await fetchGuildChannel(client, channelId);
+        await checkManageChannelsPermission(channel);
 
-        const channel = await client.channels
-          .fetch(channelId)
-          .catch(() => null);
-        if (!channel) {
-          throw new ChannelNotFoundError(channelId);
-        }
-
-        if (!("guild" in channel) || !channel.guild) {
-          throw new Error("This tool only works with server channels");
-        }
-
-        const botMember = await channel.guild.members.fetchMe();
-        if (!botMember.permissions.has(PermissionFlagsBits.ManageChannels)) {
-          throw new PermissionDeniedError("ManageChannels", channel.guild.id);
-        }
-
-        const updateOptions: any = {};
+        const updateOptions: {
+          name?: string;
+          topic?: string;
+          nsfw?: boolean;
+          rateLimitPerUser?: number;
+          reason?: string;
+        } = {};
         if (name !== undefined) updateOptions.name = name;
         if (topic !== undefined) updateOptions.topic = topic;
         if (nsfw !== undefined) updateOptions.nsfw = nsfw;
         if (slowmode !== undefined) updateOptions.rateLimitPerUser = slowmode;
         if (reason !== undefined) updateOptions.reason = reason;
 
-        const updatedChannel = await (channel as any).edit(updateOptions);
-
-        const output = {
-          success: true,
-          channel: {
-            id: updatedChannel.id,
-            name: updatedChannel.name,
-          },
-        };
+        const updatedChannel = await (channel as TextChannel).edit(updateOptions);
 
         logger.info("Channel modified", { channelId, reason });
 
@@ -670,27 +676,18 @@ export function registerChannelTools(
               text: `Channel "${updatedChannel.name}" modified successfully`,
             },
           ],
-          structuredContent: output,
+          structuredContent: {
+            success: true,
+            channel: { id: updatedChannel.id, name: updatedChannel.name },
+          },
         };
-      } catch (error: any) {
-        logger.error("Failed to modify channel", {
-          error: error.message,
-          channelId,
-        });
-
-        const output = {
-          success: false,
-          error: error.message,
-        };
+      } catch (error) {
+        const errorMsg = getErrorMessage(error);
+        logger.error("Failed to modify channel", { error: errorMsg, channelId });
 
         return {
-          content: [
-            {
-              type: "text" as const,
-              text: `Failed to modify channel: ${error.message}`,
-            },
-          ],
-          structuredContent: output,
+          content: [{ type: "text" as const, text: `Failed to modify channel: ${errorMsg}` }],
+          structuredContent: { success: false, error: errorMsg },
           isError: true,
         };
       }
@@ -706,16 +703,11 @@ export function registerChannelTools(
       inputSchema: {
         channelId: z.string().describe("Channel ID to create thread in"),
         name: z.string().min(1).max(100).describe("Thread name"),
-        message: z
-          .string()
-          .optional()
-          .describe("Initial message content for thread"),
+        message: z.string().optional().describe("Initial message content for thread"),
         autoArchiveDuration: z
           .enum(["60", "1440", "4320", "10080"])
           .optional()
-          .describe(
-            "Auto-archive after inactivity: 60=1hr, 1440=24hr, 4320=3d, 10080=7d",
-          ),
+          .describe("Auto-archive after inactivity: 60=1hr, 1440=24hr, 4320=3d, 10080=7d"),
       },
       outputSchema: {
         success: z.boolean(),
@@ -732,78 +724,33 @@ export function registerChannelTools(
     async ({ channelId, name, message, autoArchiveDuration }) => {
       try {
         const client = discordManager.getClient();
+        const channel = await client.channels.fetch(channelId).catch(() => null);
+        if (!channel || !channel.isTextBased()) throw new ChannelNotFoundError(channelId);
+        if (!("threads" in channel)) throw new Error("This channel does not support threads");
 
-        const channel = await client.channels
-          .fetch(channelId)
-          .catch(() => null);
-        if (!channel || !channel.isTextBased()) {
-          throw new ChannelNotFoundError(channelId);
-        }
-
-        if ("guild" in channel && channel.guild) {
-          const permissions = channel.permissionsFor(client.user!);
-          if (!permissions?.has(PermissionFlagsBits.CreatePublicThreads)) {
-            throw new PermissionDeniedError("CreatePublicThreads", channelId);
-          }
-        }
-
-        // Create thread
-        if (!("threads" in channel)) {
-          throw new Error("This channel does not support threads");
-        }
-
-        const thread = await (channel as any).threads.create({
+        const thread = await (channel as TextChannel).threads.create({
           name,
-          autoArchiveDuration: autoArchiveDuration
-            ? parseInt(autoArchiveDuration)
-            : 60,
+          autoArchiveDuration: autoArchiveDuration ? parseInt(autoArchiveDuration, 10) : 60,
           reason: "Thread created via MCP",
         });
 
-        // Send initial message if provided
-        if (message) {
-          await thread.send(message);
-        }
-
-        const output = {
-          success: true,
-          thread: {
-            id: thread.id,
-            name: thread.name,
-            parentId: thread.parentId || channelId,
-          },
-        };
-
+        if (message) await thread.send(message);
         logger.info("Thread created", { channelId, threadId: thread.id });
 
         return {
-          content: [
-            {
-              type: "text" as const,
-              text: `Thread "${name}" created successfully (ID: ${thread.id})`,
-            },
-          ],
-          structuredContent: output,
+          content: [{ type: "text" as const, text: `Thread "${name}" created (ID: ${thread.id})` }],
+          structuredContent: {
+            success: true,
+            thread: { id: thread.id, name: thread.name, parentId: thread.parentId || channelId },
+          },
         };
-      } catch (error: any) {
-        logger.error("Failed to create thread", {
-          error: error.message,
-          channelId,
-        });
-
-        const output = {
-          success: false,
-          error: error.message,
-        };
+      } catch (error) {
+        const errorMsg = getErrorMessage(error);
+        logger.error("Failed to create thread", { error: errorMsg, channelId });
 
         return {
-          content: [
-            {
-              type: "text" as const,
-              text: `Failed to create thread: ${error.message}`,
-            },
-          ],
-          structuredContent: output,
+          content: [{ type: "text" as const, text: `Failed to create thread: ${errorMsg}` }],
+          structuredContent: { success: false, error: errorMsg },
           isError: true,
         };
       }
@@ -867,22 +814,23 @@ export function registerChannelTools(
           ],
           structuredContent: output,
         };
-      } catch (error: any) {
+      } catch (error) {
+        const errorMsg = getErrorMessage(error);
         logger.error("Failed to archive thread", {
-          error: error.message,
+          error: errorMsg,
           threadId,
         });
 
         const output = {
           success: false,
-          error: error.message,
+          error: errorMsg,
         };
 
         return {
           content: [
             {
               type: "text" as const,
-              text: `Failed to archive thread: ${error.message}`,
+              text: `Failed to archive thread: ${errorMsg}`,
             },
           ],
           structuredContent: output,
@@ -945,9 +893,7 @@ export function registerChannelTools(
             category: ChannelType.GuildCategory,
             forum: ChannelType.GuildForum,
           };
-          filteredChannels = filteredChannels.filter(
-            (c) => c.type === typeMap[type],
-          );
+          filteredChannels = filteredChannels.filter((c) => c.type === typeMap[type]);
         }
 
         const channelList = filteredChannels.map((channel) => ({
@@ -982,22 +928,23 @@ export function registerChannelTools(
           ],
           structuredContent: output,
         };
-      } catch (error: any) {
+      } catch (error) {
+        const errorMsg = getErrorMessage(error);
         logger.error("Failed to list channels", {
-          error: error.message,
+          error: errorMsg,
           guildId,
         });
 
         const output = {
           success: false,
-          error: error.message,
+          error: errorMsg,
         };
 
         return {
           content: [
             {
               type: "text" as const,
-              text: `Failed to list channels: ${error.message}`,
+              text: `Failed to list channels: ${errorMsg}`,
             },
           ],
           structuredContent: output,
@@ -1075,22 +1022,23 @@ export function registerChannelTools(
           ],
           structuredContent: output,
         };
-      } catch (error: any) {
+      } catch (error) {
+        const errorMsg = getErrorMessage(error);
         logger.error("Failed to create stage channel", {
-          error: error.message,
+          error: errorMsg,
           guildId,
         });
 
         const output = {
           success: false,
-          error: error.message,
+          error: errorMsg,
         };
 
         return {
           content: [
             {
               type: "text" as const,
-              text: `Failed to create stage channel: ${error.message}`,
+              text: `Failed to create stage channel: ${errorMsg}`,
             },
           ],
           structuredContent: output,
@@ -1105,24 +1053,13 @@ export function registerChannelTools(
     "set_channel_permissions",
     {
       title: "Set Channel Permissions",
-      description:
-        "Override permissions for a role or member on a specific channel",
+      description: "Override permissions for a role or member on a specific channel",
       inputSchema: {
         channelId: z.string().describe("Channel ID"),
-        targetId: z
-          .string()
-          .describe("Role ID or User ID to set permissions for"),
-        targetType: z
-          .enum(["role", "member"])
-          .describe("Whether target is a role or member"),
-        allow: z
-          .array(z.string())
-          .optional()
-          .describe("Array of permission names to allow"),
-        deny: z
-          .array(z.string())
-          .optional()
-          .describe("Array of permission names to deny"),
+        targetId: z.string().describe("Role ID or User ID to set permissions for"),
+        targetType: z.enum(["role", "member"]).describe("Whether target is a role or member"),
+        allow: z.array(z.string()).optional().describe("Array of permission names to allow"),
+        deny: z.array(z.string()).optional().describe("Array of permission names to deny"),
       },
       outputSchema: {
         success: z.boolean(),
@@ -1135,9 +1072,7 @@ export function registerChannelTools(
       try {
         const client = discordManager.getClient();
 
-        const channel = await client.channels
-          .fetch(channelId)
-          .catch(() => null);
+        const channel = await client.channels.fetch(channelId).catch(() => null);
         if (!channel) {
           throw new ChannelNotFoundError(channelId);
         }
@@ -1152,22 +1087,11 @@ export function registerChannelTools(
           throw new PermissionDeniedError("ManageChannels", channel.guild.id);
         }
 
-        // Build permission overwrites
-        const permissionOverwrites: any = {};
-
-        if (allow && allow.length > 0) {
-          permissionOverwrites.allow = allow;
-        }
-
-        if (deny && deny.length > 0) {
-          permissionOverwrites.deny = deny;
-        }
-
-        // Apply permission overwrite
-        await (channel as any).permissionOverwrites.create(
-          targetId,
-          permissionOverwrites,
-        );
+        // Apply permission overwrite using edit method which accepts allow/deny arrays
+        await (channel as TextChannel).permissionOverwrites.edit(targetId, {
+          ...(allow && allow.length > 0 ? Object.fromEntries(allow.map((p) => [p, true])) : {}),
+          ...(deny && deny.length > 0 ? Object.fromEntries(deny.map((p) => [p, false])) : {}),
+        });
 
         const output = {
           success: true,
@@ -1190,23 +1114,24 @@ export function registerChannelTools(
           ],
           structuredContent: output,
         };
-      } catch (error: any) {
+      } catch (error) {
+        const errorMsg = getErrorMessage(error);
         logger.error("Failed to set channel permissions", {
-          error: error.message,
+          error: errorMsg,
           channelId,
           targetId,
         });
 
         const output = {
           success: false,
-          error: error.message,
+          error: errorMsg,
         };
 
         return {
           content: [
             {
               type: "text" as const,
-              text: `Failed to set channel permissions: ${error.message}`,
+              text: `Failed to set channel permissions: ${errorMsg}`,
             },
           ],
           structuredContent: output,
@@ -1226,21 +1151,32 @@ export function registerChannelTools(
         forumId: z.string().describe("Forum channel ID"),
         name: z.string().optional().describe("Search for threads with this name (partial match)"),
         archived: z.boolean().optional().describe("Include archived threads"),
-        limit: z.number().int().min(1).max(100).optional().default(50).describe("Max number of threads to return"),
+        limit: z
+          .number()
+          .int()
+          .min(1)
+          .max(100)
+          .optional()
+          .default(50)
+          .describe("Max number of threads to return"),
       },
       outputSchema: {
         success: z.boolean(),
-        threads: z.array(z.object({
-          id: z.string(),
-          name: z.string(),
-          ownerId: z.string(),
-          messageCount: z.number(),
-          memberCount: z.number(),
-          createdAt: z.string(),
-          archived: z.boolean(),
-          locked: z.boolean(),
-          lastMessageAt: z.string().nullable(),
-        })).optional(),
+        threads: z
+          .array(
+            z.object({
+              id: z.string(),
+              name: z.string(),
+              ownerId: z.string(),
+              messageCount: z.number(),
+              memberCount: z.number(),
+              createdAt: z.string(),
+              archived: z.boolean(),
+              locked: z.boolean(),
+              lastMessageAt: z.string().nullable(),
+            }),
+          )
+          .optional(),
         totalCount: z.number().optional(),
         error: z.string().optional(),
       },
@@ -1248,39 +1184,22 @@ export function registerChannelTools(
     async ({ forumId, name, archived = false, limit = 50 }) => {
       try {
         const client = discordManager.getClient();
-
         const forum = await client.channels.fetch(forumId).catch(() => null);
-        if (!forum || forum.type !== ChannelType.GuildForum) {
+        if (!forum || forum.type !== ChannelType.GuildForum)
           throw new Error(`Channel ${forumId} is not a forum channel`);
-        }
-
-        if (forum.guild) {
-          const botMember = await forum.guild.members.fetchMe();
-          if (!botMember.permissions.has(PermissionFlagsBits.ViewChannel)) {
-            throw new PermissionDeniedError("ViewChannel", forum.guild.id);
-          }
-        }
 
         // Fetch threads
         const threadsData = await forum.threads.fetchActive();
         let threads = Array.from(threadsData.threads.values());
-
-        // Optionally fetch archived threads
-        if (archived) {
-          const archivedThreads = await forum.threads.fetchArchived();
-          threads = threads.concat(Array.from(archivedThreads.threads.values()));
-        }
-
-        // Filter by name if provided
-        if (name) {
-          const searchLower = name.toLowerCase();
-          threads = threads.filter(t => t.name.toLowerCase().includes(searchLower));
-        }
-
-        // Limit results
+        if (archived)
+          threads = threads.concat(
+            Array.from((await forum.threads.fetchArchived()).threads.values()),
+          );
+        if (name)
+          threads = threads.filter((t) => t.name.toLowerCase().includes(name.toLowerCase()));
         threads = threads.slice(0, limit);
 
-        const threadList = threads.map(thread => ({
+        const threadList = threads.map((thread) => ({
           id: thread.id,
           name: thread.name,
           ownerId: thread.ownerId || "",
@@ -1292,12 +1211,6 @@ export function registerChannelTools(
           lastMessageAt: thread.lastMessage?.createdAt?.toISOString() || null,
         }));
 
-        const output = {
-          success: true,
-          threads: threadList,
-          totalCount: threadList.length,
-        };
-
         logger.info("Threads found", { forumId, count: threadList.length, name });
 
         return {
@@ -1307,27 +1220,15 @@ export function registerChannelTools(
               text: `Found ${threadList.length} thread(s) in forum${name ? ` matching "${name}"` : ""}`,
             },
           ],
-          structuredContent: output,
+          structuredContent: { success: true, threads: threadList, totalCount: threadList.length },
         };
-      } catch (error: any) {
-        logger.error("Failed to find threads", {
-          error: error.message,
-          forumId,
-        });
-
-        const output = {
-          success: false,
-          error: error.message,
-        };
+      } catch (error) {
+        const errorMsg = getErrorMessage(error);
+        logger.error("Failed to find threads", { error: errorMsg, forumId });
 
         return {
-          content: [
-            {
-              type: "text" as const,
-              text: `Failed to find threads: ${error.message}`,
-            },
-          ],
-          structuredContent: output,
+          content: [{ type: "text" as const, text: `Failed to find threads: ${errorMsg}` }],
+          structuredContent: { success: false, error: errorMsg },
           isError: true,
         };
       }
@@ -1339,54 +1240,48 @@ export function registerChannelTools(
     "get_channel_details",
     {
       title: "Get Channel Details",
-      description: "Get detailed information about a channel including type, permissions, and capabilities",
+      description:
+        "Get detailed information about a channel including type, permissions, and capabilities",
       inputSchema: {
         channelId: z.string().describe("Channel ID"),
       },
       outputSchema: {
         success: z.boolean(),
-        channel: z.object({
-          id: z.string(),
-          name: z.string(),
-          type: z.number(),
-          typeName: z.string(),
-          topic: z.string().nullable(),
-          nsfw: z.boolean().optional(),
-          parentId: z.string().nullable(),
-          parentName: z.string().nullable(),
-          position: z.number(),
-          rateLimitPerUser: z.number().optional(),
-          supportsThreads: z.boolean(),
-          supportsMessages: z.boolean(),
-          isTextBased: z.boolean(),
-          isForum: z.boolean(),
-          isVoice: z.boolean(),
-        }).optional(),
+        channel: z
+          .object({
+            id: z.string(),
+            name: z.string(),
+            type: z.number(),
+            typeName: z.string(),
+            topic: z.string().nullable(),
+            nsfw: z.boolean().optional(),
+            parentId: z.string().nullable(),
+            parentName: z.string().nullable(),
+            position: z.number(),
+            rateLimitPerUser: z.number().optional(),
+            supportsThreads: z.boolean(),
+            supportsMessages: z.boolean(),
+            isTextBased: z.boolean(),
+            isForum: z.boolean(),
+            isVoice: z.boolean(),
+          })
+          .optional(),
         error: z.string().optional(),
       },
     },
     async ({ channelId }) => {
       try {
         const client = discordManager.getClient();
-
-        const channel = await client.channels.fetch(channelId).catch(() => null);
-        if (!channel) {
-          throw new ChannelNotFoundError(channelId);
-        }
-
-        // Check if this is a guild channel (not a DM)
-        if (!("guild" in channel) || !channel.guild) {
-          throw new Error("This tool only works with server channels, not DMs");
-        }
+        const channel = await fetchGuildChannel(client, channelId);
 
         // Determine channel capabilities
-        const supportsThreads = channel.type === ChannelType.GuildText ||
-                               channel.type === ChannelType.GuildAnnouncement ||
-                               channel.type === ChannelType.GuildForum;
-        const supportsMessages = channel.isTextBased();
+        const supportsThreads =
+          channel.type === ChannelType.GuildText ||
+          channel.type === ChannelType.GuildAnnouncement ||
+          channel.type === ChannelType.GuildForum;
         const isForum = channel.type === ChannelType.GuildForum;
-        const isVoice = channel.type === ChannelType.GuildVoice ||
-                       channel.type === ChannelType.GuildStageVoice;
+        const isVoice =
+          channel.type === ChannelType.GuildVoice || channel.type === ChannelType.GuildStageVoice;
 
         // Get parent channel name if exists
         let parentName: string | null = null;
@@ -1395,9 +1290,11 @@ export function registerChannelTools(
           parentName = parent?.name || null;
         }
 
-        // At this point we know it's a guild channel, so we can safely cast
-        const guildChannel = channel as any;
-
+        const guildChannel = channel as GuildChannel & {
+          topic?: string | null;
+          nsfw?: boolean;
+          rateLimitPerUser?: number;
+        };
         const channelDetails = {
           id: guildChannel.id,
           name: guildChannel.name || guildChannel.id,
@@ -1410,49 +1307,30 @@ export function registerChannelTools(
           position: guildChannel.position ?? 0,
           rateLimitPerUser: guildChannel.rateLimitPerUser,
           supportsThreads,
-          supportsMessages,
-          isTextBased: guildChannel.isTextBased(),
+          supportsMessages: channel.isTextBased(),
+          isTextBased: channel.isTextBased(),
           isForum,
           isVoice,
         };
 
-        const output = {
-          success: true,
-          channel: channelDetails,
-        };
-
         logger.info("Channel details retrieved", { channelId });
 
-        const channelName = guildChannel.name || guildChannel.id;
-
         return {
           content: [
             {
               type: "text" as const,
-              text: `Channel: ${channelName} (${ChannelType[channel.type]})`,
+              text: `Channel: ${guildChannel.name || guildChannel.id} (${ChannelType[channel.type]})`,
             },
           ],
-          structuredContent: output,
+          structuredContent: { success: true, channel: channelDetails },
         };
-      } catch (error: any) {
-        logger.error("Failed to get channel details", {
-          error: error.message,
-          channelId,
-        });
-
-        const output = {
-          success: false,
-          error: error.message,
-        };
+      } catch (error) {
+        const errorMsg = getErrorMessage(error);
+        logger.error("Failed to get channel details", { error: errorMsg, channelId });
 
         return {
-          content: [
-            {
-              type: "text" as const,
-              text: `Failed to get channel details: ${error.message}`,
-            },
-          ],
-          structuredContent: output,
+          content: [{ type: "text" as const, text: `Failed to get channel details: ${errorMsg}` }],
+          structuredContent: { success: false, error: errorMsg },
           isError: true,
         };
       }

@@ -1,4 +1,4 @@
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 
 export function registerServerSetupPrompts(server: McpServer) {
@@ -16,10 +16,7 @@ export function registerServerSetupPrompts(server: McpServer) {
       },
     },
     ({ guildId, serverPurpose = "community" }) => {
-      const purposeTemplates: Record<
-        string,
-        { categories: string[]; channels: string[] }
-      > = {
+      const purposeTemplates: Record<string, { categories: string[]; channels: string[] }> = {
         community: {
           categories: ["Welcome", "General", "Help & Support", "Off-Topic"],
           channels: [
@@ -33,46 +30,15 @@ export function registerServerSetupPrompts(server: McpServer) {
           ],
         },
         gaming: {
-          categories: [
-            "Welcome",
-            "General",
-            "Voice Channels",
-            "Game Channels",
-          ],
-          channels: [
-            "welcome",
-            "rules",
-            "lfg",
-            "general",
-            "game-chat",
-            "voice-1",
-            "voice-2",
-          ],
+          categories: ["Welcome", "General", "Voice Channels", "Game Channels"],
+          channels: ["welcome", "rules", "lfg", "general", "game-chat", "voice-1", "voice-2"],
         },
         project: {
-          categories: [
-            "General",
-            "Development",
-            "Design",
-            "Resources",
-            "Archive",
-          ],
-          channels: [
-            "announcements",
-            "general",
-            "dev-chat",
-            "code-review",
-            "design",
-            "resources",
-          ],
+          categories: ["General", "Development", "Design", "Resources", "Archive"],
+          channels: ["announcements", "general", "dev-chat", "code-review", "design", "resources"],
         },
         education: {
-          categories: [
-            "Information",
-            "Classroom",
-            "Study Groups",
-            "Resources",
-          ],
+          categories: ["Information", "Classroom", "Study Groups", "Resources"],
           channels: [
             "welcome",
             "syllabus",
@@ -85,15 +51,7 @@ export function registerServerSetupPrompts(server: McpServer) {
         },
         social: {
           categories: ["Welcome", "Hangout", "Activities", "Media"],
-          channels: [
-            "welcome",
-            "introductions",
-            "general",
-            "events",
-            "games",
-            "media",
-            "memes",
-          ],
+          channels: ["welcome", "introductions", "general", "events", "games", "media", "memes"],
         },
       };
 
@@ -163,10 +121,7 @@ Would you like to proceed with the recommended structure, or would you prefer a 
       description: "Configure welcome messages and auto-roles for new members",
       argsSchema: {
         guildId: z.string().describe("Server/Guild ID"),
-        welcomeChannelId: z
-          .string()
-          .optional()
-          .describe("Channel for welcome messages"),
+        welcomeChannelId: z.string().optional().describe("Channel for welcome messages"),
       },
     },
     ({ guildId, welcomeChannelId }) => ({
