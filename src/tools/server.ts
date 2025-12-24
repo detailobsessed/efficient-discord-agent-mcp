@@ -1,18 +1,198 @@
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { DiscordClientManager } from "../discord/client.js";
-import { Logger } from "../utils/logger.js";
-import { z } from "zod";
 import {
-  PermissionDeniedError,
-  GuildNotFoundError,
-} from "../errors/discord.js";
-import { PermissionFlagsBits, AuditLogEvent } from "discord.js";
+  AuditLogEvent,
+  type Collection,
+  type GuildAuditLogsFetchOptions,
+  type GuildEditOptions,
+  PermissionFlagsBits,
+  type Webhook,
+} from "discord.js";
+import { z } from "zod";
+import type { DiscordClientManager } from "../discord/client.js";
+import { GuildNotFoundError, PermissionDeniedError } from "../errors/discord.js";
+import type { ToolRegistrationTarget } from "../registry/tool-adapter.js";
+import { getErrorMessage } from "../utils/errors.js";
+import type { Logger } from "../utils/logger.js";
 
 export function registerServerTools(
-  server: McpServer,
+  server: ToolRegistrationTarget,
   discordManager: DiscordClientManager,
   logger: Logger,
 ) {
+  // List Guilds Tool
+  server.registerTool(
+    "list_guilds",
+    {
+      title: "List Bot Guilds",
+      description: "List all Discord servers (guilds) the bot is a member of",
+      inputSchema: {},
+      outputSchema: {
+        success: z.boolean(),
+        guilds: z
+          .array(
+            z.object({
+              id: z.string(),
+              name: z.string(),
+              memberCount: z.number(),
+              ownerId: z.string(),
+              icon: z.string().nullable(),
+            }),
+          )
+          .optional(),
+        totalCount: z.number().optional(),
+        error: z.string().optional(),
+      },
+    },
+    async () => {
+      try {
+        const client = discordManager.getClient();
+        const guilds = client.guilds.cache;
+
+        const guildList = guilds.map((guild) => ({
+          id: guild.id,
+          name: guild.name,
+          memberCount: guild.memberCount,
+          ownerId: guild.ownerId,
+          icon: guild.iconURL(),
+        }));
+
+        const output = {
+          success: true,
+          guilds: guildList,
+          totalCount: guildList.length,
+        };
+
+        logger.info("Guilds listed", { count: guildList.length });
+
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `Bot is in ${guildList.length} server(s): ${guildList.map((g) => g.name).join(", ")}`,
+            },
+          ],
+          structuredContent: output,
+        };
+      } catch (error) {
+        const errorMsg = getErrorMessage(error);
+        logger.error("Failed to list guilds", { error: errorMsg });
+
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `Failed to list guilds: ${errorMsg}`,
+            },
+          ],
+          structuredContent: { success: false, error: errorMsg },
+          isError: true,
+        };
+      }
+    },
+  );
+
+  // Get Server Info Tool
+  server.registerTool(
+    "get_server_info",
+    {
+      title: "Get Server Info",
+      description:
+        "Get detailed information about a Discord server including name, member count, channels, roles, and more",
+      inputSchema: {
+        guildId: z.string().describe("Guild ID"),
+      },
+      outputSchema: {
+        success: z.boolean(),
+        server: z
+          .object({
+            id: z.string(),
+            name: z.string(),
+            description: z.string().nullable(),
+            memberCount: z.number(),
+            ownerId: z.string(),
+            ownerUsername: z.string().optional(),
+            icon: z.string().nullable(),
+            banner: z.string().nullable(),
+            createdAt: z.string(),
+            channelCount: z.number(),
+            roleCount: z.number(),
+            emojiCount: z.number(),
+            boostLevel: z.number(),
+            boostCount: z.number(),
+            verificationLevel: z.string(),
+            features: z.array(z.string()),
+          })
+          .optional(),
+        error: z.string().optional(),
+      },
+    },
+    async ({ guildId }) => {
+      try {
+        const client = discordManager.getClient();
+
+        const guild = await client.guilds.fetch(guildId).catch(() => null);
+        if (!guild) {
+          throw new GuildNotFoundError(guildId);
+        }
+
+        // Fetch additional data
+        const owner = await guild.fetchOwner().catch(() => null);
+
+        const serverInfo = {
+          id: guild.id,
+          name: guild.name,
+          description: guild.description,
+          memberCount: guild.memberCount,
+          ownerId: guild.ownerId,
+          ownerUsername: owner?.user.username,
+          icon: guild.iconURL(),
+          banner: guild.bannerURL(),
+          createdAt: guild.createdAt.toISOString(),
+          channelCount: guild.channels.cache.size,
+          roleCount: guild.roles.cache.size,
+          emojiCount: guild.emojis.cache.size,
+          boostLevel: guild.premiumTier,
+          boostCount: guild.premiumSubscriptionCount || 0,
+          verificationLevel: guild.verificationLevel.toString(),
+          features: [...guild.features],
+        };
+
+        const output = {
+          success: true,
+          server: serverInfo,
+        };
+
+        logger.info("Server info retrieved", { guildId, name: guild.name });
+
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `**${guild.name}**\nMembers: ${guild.memberCount} | Channels: ${serverInfo.channelCount} | Roles: ${serverInfo.roleCount}`,
+            },
+          ],
+          structuredContent: output,
+        };
+      } catch (error) {
+        const errorMsg = getErrorMessage(error);
+        logger.error("Failed to get server info", {
+          error: errorMsg,
+          guildId,
+        });
+
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `Failed to get server info: ${errorMsg}`,
+            },
+          ],
+          structuredContent: { success: false, error: errorMsg },
+          isError: true,
+        };
+      }
+    },
+  );
+
   // Modify Server Tool
   server.registerTool(
     "modify_server",
@@ -22,15 +202,8 @@ export function registerServerTools(
       inputSchema: {
         guildId: z.string().describe("Guild ID"),
         name: z.string().min(2).max(100).optional().describe("New server name"),
-        description: z
-          .string()
-          .max(120)
-          .optional()
-          .describe("New server description"),
-        reason: z
-          .string()
-          .optional()
-          .describe("Reason for modification (audit log)"),
+        description: z.string().max(120).optional().describe("New server description"),
+        reason: z.string().optional().describe("Reason for modification (audit log)"),
       },
       outputSchema: {
         success: z.boolean(),
@@ -58,7 +231,7 @@ export function registerServerTools(
           throw new PermissionDeniedError("ManageGuild", guildId);
         }
 
-        const updateOptions: any = {};
+        const updateOptions: GuildEditOptions = {};
         if (name !== undefined) updateOptions.name = name;
         if (description !== undefined) updateOptions.description = description;
         if (reason !== undefined) updateOptions.reason = reason;
@@ -85,25 +258,21 @@ export function registerServerTools(
           ],
           structuredContent: output,
         };
-      } catch (error: any) {
+      } catch (error) {
+        const errorMsg = getErrorMessage(error);
         logger.error("Failed to modify server", {
-          error: error.message,
+          error: errorMsg,
           guildId,
         });
-
-        const output = {
-          success: false,
-          error: error.message,
-        };
 
         return {
           content: [
             {
               type: "text" as const,
-              text: `Failed to modify server: ${error.message}`,
+              text: `Failed to modify server: ${errorMsg}`,
             },
           ],
-          structuredContent: output,
+          structuredContent: { success: false, error: errorMsg },
           isError: true,
         };
       }
@@ -126,10 +295,7 @@ export function registerServerTools(
           .optional()
           .default(50)
           .describe("Number of entries to retrieve (max 100)"),
-        userId: z
-          .string()
-          .optional()
-          .describe("Filter by user who performed actions"),
+        userId: z.string().optional().describe("Filter by user who performed actions"),
         actionType: z
           .enum([
             "ALL",
@@ -184,7 +350,7 @@ export function registerServerTools(
           throw new PermissionDeniedError("ViewAuditLog", guildId);
         }
 
-        const fetchOptions: any = { limit };
+        const fetchOptions: GuildAuditLogsFetchOptions<AuditLogEvent> = { limit };
         if (userId) fetchOptions.user = userId;
         if (actionType !== "ALL") {
           const actionMap: Record<string, AuditLogEvent> = {
@@ -237,25 +403,21 @@ export function registerServerTools(
           ],
           structuredContent: output,
         };
-      } catch (error: any) {
+      } catch (error) {
+        const errorMsg = getErrorMessage(error);
         logger.error("Failed to get audit logs", {
-          error: error.message,
+          error: errorMsg,
           guildId,
         });
-
-        const output = {
-          success: false,
-          error: error.message,
-        };
 
         return {
           content: [
             {
               type: "text" as const,
-              text: `Failed to get audit logs: ${error.message}`,
+              text: `Failed to get audit logs: ${errorMsg}`,
             },
           ],
-          structuredContent: output,
+          structuredContent: { success: false, error: errorMsg },
           isError: true,
         };
       }
@@ -270,10 +432,7 @@ export function registerServerTools(
       description: "Get all webhooks in the server or a specific channel",
       inputSchema: {
         guildId: z.string().describe("Guild ID"),
-        channelId: z
-          .string()
-          .optional()
-          .describe("Filter by channel ID (optional)"),
+        channelId: z.string().optional().describe("Filter by channel ID (optional)"),
       },
       outputSchema: {
         success: z.boolean(),
@@ -306,13 +465,11 @@ export function registerServerTools(
           throw new PermissionDeniedError("ManageWebhooks", guildId);
         }
 
-        let webhooks;
+        let webhooks: Collection<string, Webhook>;
         if (channelId) {
           const channel = await guild.channels.fetch(channelId);
           if (!channel || !("fetchWebhooks" in channel)) {
-            throw new Error(
-              "Invalid channel or channel doesn't support webhooks",
-            );
+            throw new Error("Invalid channel or channel doesn't support webhooks");
           }
           webhooks = await channel.fetchWebhooks();
         } else {
@@ -344,25 +501,21 @@ export function registerServerTools(
           ],
           structuredContent: output,
         };
-      } catch (error: any) {
+      } catch (error) {
+        const errorMsg = getErrorMessage(error);
         logger.error("Failed to list webhooks", {
-          error: error.message,
+          error: errorMsg,
           guildId,
         });
-
-        const output = {
-          success: false,
-          error: error.message,
-        };
 
         return {
           content: [
             {
               type: "text" as const,
-              text: `Failed to list webhooks: ${error.message}`,
+              text: `Failed to list webhooks: ${errorMsg}`,
             },
           ],
-          structuredContent: output,
+          structuredContent: { success: false, error: errorMsg },
           isError: true,
         };
       }
@@ -378,10 +531,7 @@ export function registerServerTools(
       inputSchema: {
         channelId: z.string().describe("Channel ID"),
         name: z.string().min(1).max(80).describe("Webhook name"),
-        reason: z
-          .string()
-          .optional()
-          .describe("Reason for creating webhook (audit log)"),
+        reason: z.string().optional().describe("Reason for creating webhook (audit log)"),
       },
       outputSchema: {
         success: z.boolean(),
@@ -400,13 +550,9 @@ export function registerServerTools(
       try {
         const client = discordManager.getClient();
 
-        const channel = await client.channels
-          .fetch(channelId)
-          .catch(() => null);
+        const channel = await client.channels.fetch(channelId).catch(() => null);
         if (!channel || !("createWebhook" in channel)) {
-          throw new Error(
-            "Invalid channel or channel doesn't support webhooks",
-          );
+          throw new Error("Invalid channel or channel doesn't support webhooks");
         }
 
         if ("guild" in channel && channel.guild) {
@@ -416,7 +562,7 @@ export function registerServerTools(
           }
         }
 
-        const webhook = await (channel as any).createWebhook({
+        const webhook = await channel.createWebhook({
           name,
           reason,
         });
@@ -442,25 +588,21 @@ export function registerServerTools(
           ],
           structuredContent: output,
         };
-      } catch (error: any) {
+      } catch (error) {
+        const errorMsg = getErrorMessage(error);
         logger.error("Failed to create webhook", {
-          error: error.message,
+          error: errorMsg,
           channelId,
         });
-
-        const output = {
-          success: false,
-          error: error.message,
-        };
 
         return {
           content: [
             {
               type: "text" as const,
-              text: `Failed to create webhook: ${error.message}`,
+              text: `Failed to create webhook: ${errorMsg}`,
             },
           ],
-          structuredContent: output,
+          structuredContent: { success: false, error: errorMsg },
           isError: true,
         };
       }
@@ -544,25 +686,21 @@ export function registerServerTools(
           ],
           structuredContent: output,
         };
-      } catch (error: any) {
+      } catch (error) {
+        const errorMsg = getErrorMessage(error);
         logger.error("Failed to get invites", {
-          error: error.message,
+          error: errorMsg,
           guildId,
         });
-
-        const output = {
-          success: false,
-          error: error.message,
-        };
 
         return {
           content: [
             {
               type: "text" as const,
-              text: `Failed to get invites: ${error.message}`,
+              text: `Failed to get invites: ${errorMsg}`,
             },
           ],
-          structuredContent: output,
+          structuredContent: { success: false, error: errorMsg },
           isError: true,
         };
       }
@@ -591,19 +729,13 @@ export function registerServerTools(
           .max(100)
           .optional()
           .describe("Max number of uses (0 = unlimited)"),
-        temporary: z
-          .boolean()
-          .optional()
-          .describe("Grant temporary membership"),
+        temporary: z.boolean().optional().describe("Grant temporary membership"),
         unique: z
           .boolean()
           .optional()
           .default(true)
           .describe("Create a unique invite (don't reuse existing)"),
-        reason: z
-          .string()
-          .optional()
-          .describe("Reason for creating invite (audit log)"),
+        reason: z.string().optional().describe("Reason for creating invite (audit log)"),
       },
       outputSchema: {
         success: z.boolean(),
@@ -618,37 +750,23 @@ export function registerServerTools(
         error: z.string().optional(),
       },
     },
-    async ({
-      channelId,
-      maxAge,
-      maxUses,
-      temporary,
-      unique = true,
-      reason,
-    }) => {
+    async ({ channelId, maxAge, maxUses, temporary, unique = true, reason }) => {
       try {
         const client = discordManager.getClient();
 
-        const channel = await client.channels
-          .fetch(channelId)
-          .catch(() => null);
+        const channel = await client.channels.fetch(channelId).catch(() => null);
         if (!channel || !("createInvite" in channel)) {
           throw new Error("Invalid channel or channel doesn't support invites");
         }
 
         if ("guild" in channel && channel.guild) {
           const botMember = await channel.guild.members.fetchMe();
-          if (
-            !botMember.permissions.has(PermissionFlagsBits.CreateInstantInvite)
-          ) {
-            throw new PermissionDeniedError(
-              "CreateInstantInvite",
-              channel.guild.id,
-            );
+          if (!botMember.permissions.has(PermissionFlagsBits.CreateInstantInvite)) {
+            throw new PermissionDeniedError("CreateInstantInvite", channel.guild.id);
           }
         }
 
-        const invite = await (channel as any).createInvite({
+        const invite = await channel.createInvite({
           maxAge,
           maxUses,
           temporary,
@@ -677,22 +795,23 @@ export function registerServerTools(
           ],
           structuredContent: output,
         };
-      } catch (error: any) {
+      } catch (error) {
+        const errorMsg = getErrorMessage(error);
         logger.error("Failed to create invite", {
-          error: error.message,
+          error: errorMsg,
           channelId,
         });
 
         const output = {
           success: false,
-          error: error.message,
+          error: errorMsg,
         };
 
         return {
           content: [
             {
               type: "text" as const,
-              text: `Failed to create invite: ${error.message}`,
+              text: `Failed to create invite: ${errorMsg}`,
             },
           ],
           structuredContent: output,

@@ -4,7 +4,7 @@ interface LogEntry {
   timestamp: string;
   level: LogLevel;
   message: string;
-  [key: string]: any;
+  [key: string]: unknown;
 }
 
 export class Logger {
@@ -34,9 +34,7 @@ export class Logger {
       console.log(JSON.stringify(entry));
     } else {
       const meta = metadata ? ` ${JSON.stringify(metadata)}` : "";
-      console.log(
-        `[${entry.timestamp}] ${level.toUpperCase()}: ${message}${meta}`,
-      );
+      console.log(`[${entry.timestamp}] ${level.toUpperCase()}: ${message}${meta}`);
     }
   }
 

@@ -1,24 +1,33 @@
+import { config } from "dotenv";
+import { dirname, join } from "path";
+import { fileURLToPath } from "url";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+config({ path: join(__dirname, "../../.env") });
+
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
-import express from "express";
+import express, { type Request, type Response } from "express";
 import { DiscordClientManager } from "../discord/client.js";
-import { registerMessagingTools } from "../tools/messaging.js";
-import { registerChannelTools } from "../tools/channels.js";
-import { registerMemberTools } from "../tools/members.js";
-import { registerRoleTools } from "../tools/roles.js";
-import { registerServerTools } from "../tools/server.js";
-import { registerModerationTools } from "../tools/moderation.js";
-import { registerEmojiTools } from "../tools/emojis.js";
-import { registerStickerTools } from "../tools/stickers.js";
-import { registerScheduledEventTools } from "../tools/scheduled-events.js";
-import { registerAutoModerationTools } from "../tools/automod.js";
-import { registerApplicationCommandTools } from "../tools/application-commands.js";
-import { registerGuildResources } from "../resources/guilds.js";
-import { registerModerationPrompts } from "../prompts/moderation.js";
-import { registerServerSetupPrompts } from "../prompts/server-setup.js";
 import { registerEventPrompts } from "../prompts/events.js";
+import { registerModerationPrompts } from "../prompts/moderation.js";
 import { registerPermissionPrompts } from "../prompts/permissions.js";
+import { registerServerSetupPrompts } from "../prompts/server-setup.js";
+import { createRegistryAdapter, registerMetaTools, ToolRegistry } from "../registry/index.js";
+import { registerGuildResources } from "../resources/guilds.js";
+import { registerApplicationCommandTools } from "../tools/application-commands.js";
+import { registerAutoModerationTools } from "../tools/automod.js";
+import { registerChannelTools } from "../tools/channels.js";
+import { registerEmojiTools } from "../tools/emojis.js";
+import { registerMemberTools } from "../tools/members.js";
+import { registerMessagingTools } from "../tools/messaging.js";
+import { registerModerationTools } from "../tools/moderation.js";
+import { registerRoleTools } from "../tools/roles.js";
+import { registerScheduledEventTools } from "../tools/scheduled-events.js";
+import { registerServerTools } from "../tools/server.js";
+import { registerStickerTools } from "../tools/stickers.js";
 import { Logger } from "../utils/logger.js";
 import { loadConfig } from "./config.js";
 
@@ -39,13 +48,10 @@ async function main() {
 
   try {
     await discordManager.connect();
-    logger.info(
-      "Discord client connected successfully",
-      discordManager.getStats(),
-    );
-  } catch (error: any) {
+    logger.info("Discord client connected successfully", discordManager.getStats());
+  } catch (error) {
     logger.error("Failed to initialize Discord client", {
-      error: error.message,
+      error: error instanceof Error ? error.message : String(error),
     });
     process.exit(1);
   }
@@ -56,19 +62,36 @@ async function main() {
     version: config.serverVersion,
   });
 
-  // Register tools
-  logger.info("Registering tools...");
-  registerMessagingTools(mcpServer, discordManager, logger);
-  registerChannelTools(mcpServer, discordManager, logger);
-  registerMemberTools(mcpServer, discordManager, logger);
-  registerRoleTools(mcpServer, discordManager, logger);
-  registerServerTools(mcpServer, discordManager, logger);
-  registerModerationTools(mcpServer, discordManager, logger);
-  registerEmojiTools(mcpServer, discordManager, logger);
-  registerStickerTools(mcpServer, discordManager, logger);
-  registerScheduledEventTools(mcpServer, discordManager, logger);
-  registerAutoModerationTools(mcpServer, discordManager, logger);
-  registerApplicationCommandTools(mcpServer, discordManager, logger);
+  // Create tool registry for progressive disclosure
+  // we expose 5 meta-tools that allow the LLM to discover and execute tools on-demand
+  const registry = new ToolRegistry();
+
+  // Register all tools with the registry (not directly with MCP server)
+  logger.info("Registering tools with registry...");
+  registerMessagingTools(createRegistryAdapter(registry, "messaging"), discordManager, logger);
+  registerChannelTools(createRegistryAdapter(registry, "channels"), discordManager, logger);
+  registerMemberTools(createRegistryAdapter(registry, "members"), discordManager, logger);
+  registerRoleTools(createRegistryAdapter(registry, "roles"), discordManager, logger);
+  registerServerTools(createRegistryAdapter(registry, "server"), discordManager, logger);
+  registerModerationTools(createRegistryAdapter(registry, "moderation"), discordManager, logger);
+  registerEmojiTools(createRegistryAdapter(registry, "emojis"), discordManager, logger);
+  registerStickerTools(createRegistryAdapter(registry, "stickers"), discordManager, logger);
+  registerScheduledEventTools(
+    createRegistryAdapter(registry, "scheduled-events"),
+    discordManager,
+    logger,
+  );
+  registerAutoModerationTools(createRegistryAdapter(registry, "automod"), discordManager, logger);
+  registerApplicationCommandTools(
+    createRegistryAdapter(registry, "application-commands"),
+    discordManager,
+    logger,
+  );
+
+  // Register the 5 meta-tools with the MCP server
+  // These are the ONLY tools exposed to the LLM
+  logger.info("Registering meta-tools for progressive disclosure...");
+  registerMetaTools(mcpServer, registry, logger);
 
   // Register resources
   logger.info("Registering resources...");
@@ -94,7 +117,7 @@ async function main() {
     app.use(express.json());
 
     // Health check endpoint
-    app.get("/health", (_req, res) => {
+    app.get("/health", (_req: Request, res: Response) => {
       const stats = discordManager.getStats();
       res.json({
         status: stats.connected ? "healthy" : "unhealthy",
@@ -107,7 +130,7 @@ async function main() {
     });
 
     // MCP endpoint
-    app.post("/mcp", async (_req, res) => {
+    app.post("/mcp", async (_req: Request, res: Response) => {
       try {
         const transport = new StreamableHTTPServerTransport({
           sessionIdGenerator: undefined,
@@ -120,8 +143,10 @@ async function main() {
 
         await mcpServer.connect(transport);
         await transport.handleRequest(_req, res, _req.body);
-      } catch (error: any) {
-        logger.error("Error handling MCP request", { error: error.message });
+      } catch (error) {
+        logger.error("Error handling MCP request", {
+          error: error instanceof Error ? error.message : String(error),
+        });
         if (!res.headersSent) {
           res.status(500).json({
             jsonrpc: "2.0",
@@ -137,11 +162,9 @@ async function main() {
 
     app
       .listen(config.httpPort, () => {
-        logger.info(
-          `MCP Server running on http://localhost:${config.httpPort}/mcp`,
-        );
+        logger.info(`MCP Server running on http://localhost:${config.httpPort}/mcp`);
       })
-      .on("error", (error: any) => {
+      .on("error", (error: Error) => {
         logger.error("Server error", { error: error.message });
         process.exit(1);
       });

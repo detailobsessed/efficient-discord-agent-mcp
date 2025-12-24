@@ -1,16 +1,17 @@
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { DiscordClientManager } from "../discord/client.js";
-import { Logger } from "../utils/logger.js";
+import { PermissionFlagsBits } from "discord.js";
 import { z } from "zod";
+import type { DiscordClientManager } from "../discord/client.js";
 import {
-  PermissionDeniedError,
   ChannelNotFoundError,
   GuildNotFoundError,
+  PermissionDeniedError,
 } from "../errors/discord.js";
-import { PermissionFlagsBits } from "discord.js";
+import type { ToolRegistrationTarget } from "../registry/tool-adapter.js";
+import { getErrorMessage } from "../utils/errors.js";
+import type { Logger } from "../utils/logger.js";
 
 export function registerModerationTools(
-  server: McpServer,
+  server: ToolRegistrationTarget,
   discordManager: DiscordClientManager,
   logger: Logger,
 ) {
@@ -19,25 +20,13 @@ export function registerModerationTools(
     "bulk_delete_messages",
     {
       title: "Bulk Delete Messages",
-      description:
-        "Delete multiple messages at once (max 100, must be <14 days old)",
+      description: "Delete multiple messages at once (max 100, must be <14 days old)",
       inputSchema: {
         channelId: z.string().describe("Channel ID"),
-        limit: z
-          .number()
-          .int()
-          .min(2)
-          .max(100)
-          .describe("Number of messages to delete (2-100)"),
-        filterUserId: z
-          .string()
-          .optional()
-          .describe("Only delete messages from this user"),
+        limit: z.number().int().min(2).max(100).describe("Number of messages to delete (2-100)"),
+        filterUserId: z.string().optional().describe("Only delete messages from this user"),
         filterBots: z.boolean().optional().describe("Only delete bot messages"),
-        reason: z
-          .string()
-          .optional()
-          .describe("Reason for bulk delete (audit log)"),
+        reason: z.string().optional().describe("Reason for bulk delete (audit log)"),
       },
       outputSchema: {
         success: z.boolean(),
@@ -48,100 +37,38 @@ export function registerModerationTools(
     async ({ channelId, limit, filterUserId, filterBots, reason }) => {
       try {
         const client = discordManager.getClient();
+        const channel = await client.channels.fetch(channelId).catch(() => null);
+        if (!channel || !channel.isTextBased()) throw new ChannelNotFoundError(channelId);
+        if (!("bulkDelete" in channel)) throw new ChannelNotFoundError(channelId);
 
-        const channel = await client.channels
-          .fetch(channelId)
-          .catch(() => null);
-        if (!channel || !channel.isTextBased()) {
-          throw new ChannelNotFoundError(channelId);
-        }
-
-        // Check permissions
-        if ("guild" in channel && channel.guild) {
-          const permissions = channel.permissionsFor(client.user!);
-          if (!permissions?.has(PermissionFlagsBits.ManageMessages)) {
-            throw new PermissionDeniedError("ManageMessages", channelId);
-          }
-        }
-
-        // Fetch messages
         const messages = await channel.messages.fetch({ limit });
-
-        // Apply filters
-        let messagesToDelete = Array.from(messages.values());
-
-        if (filterUserId) {
-          messagesToDelete = messagesToDelete.filter(
-            (msg) => msg.author.id === filterUserId,
-          );
-        }
-
-        if (filterBots) {
-          messagesToDelete = messagesToDelete.filter((msg) => msg.author.bot);
-        }
-
-        // Filter out messages older than 14 days (Discord limitation)
         const twoWeeksAgo = Date.now() - 14 * 24 * 60 * 60 * 1000;
-        messagesToDelete = messagesToDelete.filter(
-          (msg) => msg.createdTimestamp > twoWeeksAgo,
-        );
+        const messagesToDelete = Array.from(messages.values())
+          .filter((msg) => msg.createdTimestamp > twoWeeksAgo)
+          .filter((msg) => !filterUserId || msg.author.id === filterUserId)
+          .filter((msg) => !filterBots || msg.author.bot);
 
-        if (messagesToDelete.length === 0) {
+        if (messagesToDelete.length === 0)
           throw new Error(
             "No messages found matching criteria or all messages are too old (>14 days)",
           );
-        }
 
-        // Bulk delete
-        if (!("bulkDelete" in channel)) {
-          throw new ChannelNotFoundError(channelId);
-        }
-
-        const deleted = await (channel as any).bulkDelete(
-          messagesToDelete,
-          true,
-        );
-        const deletedCount = deleted.size;
-
-        const output = {
-          success: true,
-          deletedCount,
-        };
-
-        logger.info("Bulk delete completed", {
-          channelId,
-          deletedCount,
-          reason,
-        });
+        const deleted = await channel.bulkDelete(messagesToDelete, true);
+        logger.info("Bulk delete completed", { channelId, deletedCount: deleted.size, reason });
 
         return {
           content: [
-            {
-              type: "text" as const,
-              text: `Successfully deleted ${deletedCount} message(s)`,
-            },
+            { type: "text" as const, text: `Successfully deleted ${deleted.size} message(s)` },
           ],
-          structuredContent: output,
+          structuredContent: { success: true, deletedCount: deleted.size },
         };
-      } catch (error: any) {
-        logger.error("Failed to bulk delete messages", {
-          error: error.message,
-          channelId,
-        });
-
-        const output = {
-          success: false,
-          error: error.message,
-        };
+      } catch (error) {
+        const errorMsg = getErrorMessage(error);
+        logger.error("Failed to bulk delete messages", { error: errorMsg, channelId });
 
         return {
-          content: [
-            {
-              type: "text" as const,
-              text: `Failed to bulk delete messages: ${error.message}`,
-            },
-          ],
-          structuredContent: output,
+          content: [{ type: "text" as const, text: `Failed to bulk delete messages: ${errorMsg}` }],
+          structuredContent: { success: false, error: errorMsg },
           isError: true,
         };
       }
@@ -219,22 +146,23 @@ export function registerModerationTools(
           ],
           structuredContent: output,
         };
-      } catch (error: any) {
+      } catch (error) {
+        const errorMsg = getErrorMessage(error);
         logger.error("Failed to get bans", {
-          error: error.message,
+          error: errorMsg,
           guildId,
         });
 
         const output = {
           success: false,
-          error: error.message,
+          error: errorMsg,
         };
 
         return {
           content: [
             {
               type: "text" as const,
-              text: `Failed to get bans: ${error.message}`,
+              text: `Failed to get bans: ${errorMsg}`,
             },
           ],
           structuredContent: output,
@@ -253,15 +181,8 @@ export function registerModerationTools(
       inputSchema: {
         guildId: z.string().describe("Guild ID"),
         userId: z.string().describe("User ID"),
-        nickname: z
-          .string()
-          .max(32)
-          .optional()
-          .describe("New nickname (null/empty to remove)"),
-        reason: z
-          .string()
-          .optional()
-          .describe("Reason for nickname change (audit log)"),
+        nickname: z.string().max(32).optional().describe("New nickname (null/empty to remove)"),
+        reason: z.string().optional().describe("Reason for nickname change (audit log)"),
       },
       outputSchema: {
         success: z.boolean(),
@@ -317,23 +238,24 @@ export function registerModerationTools(
           ],
           structuredContent: output,
         };
-      } catch (error: any) {
+      } catch (error) {
+        const errorMsg = getErrorMessage(error);
         logger.error("Failed to set nickname", {
-          error: error.message,
+          error: errorMsg,
           guildId,
           userId,
         });
 
         const output = {
           success: false,
-          error: error.message,
+          error: errorMsg,
         };
 
         return {
           content: [
             {
               type: "text" as const,
-              text: `Failed to set nickname: ${error.message}`,
+              text: `Failed to set nickname: ${errorMsg}`,
             },
           ],
           structuredContent: output,

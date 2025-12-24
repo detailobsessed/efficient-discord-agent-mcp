@@ -1,16 +1,41 @@
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { DiscordClientManager } from "../discord/client.js";
-import { Logger } from "../utils/logger.js";
-import { z } from "zod";
-import { InvalidInputError } from "../errors/discord.js";
-import { validateGuildAccess } from "../utils/guild-validation.js";
 import {
-  ApplicationCommandType,
+  type ApplicationCommand,
+  type ApplicationCommandDataResolvable,
   ApplicationCommandOptionType,
+  ApplicationCommandType,
+  type Collection,
 } from "discord.js";
+import { z } from "zod";
+import type { DiscordClientManager } from "../discord/client.js";
+import { InvalidInputError } from "../errors/discord.js";
+import type { ToolRegistrationTarget } from "../registry/tool-adapter.js";
+import { getErrorMessage } from "../utils/errors.js";
+import { validateGuildAccess } from "../utils/guild-validation.js";
+import type { Logger } from "../utils/logger.js";
+
+// Type maps for application commands - defined outside function to avoid recreation
+const typeMap: Record<string, ApplicationCommandType> = {
+  CHAT_INPUT: ApplicationCommandType.ChatInput,
+  USER: ApplicationCommandType.User,
+  MESSAGE: ApplicationCommandType.Message,
+};
+
+const optionTypeMap: Record<string, ApplicationCommandOptionType> = {
+  SUB_COMMAND: ApplicationCommandOptionType.Subcommand,
+  SUB_COMMAND_GROUP: ApplicationCommandOptionType.SubcommandGroup,
+  STRING: ApplicationCommandOptionType.String,
+  INTEGER: ApplicationCommandOptionType.Integer,
+  BOOLEAN: ApplicationCommandOptionType.Boolean,
+  USER: ApplicationCommandOptionType.User,
+  CHANNEL: ApplicationCommandOptionType.Channel,
+  ROLE: ApplicationCommandOptionType.Role,
+  MENTIONABLE: ApplicationCommandOptionType.Mentionable,
+  NUMBER: ApplicationCommandOptionType.Number,
+  ATTACHMENT: ApplicationCommandOptionType.Attachment,
+};
 
 export function registerApplicationCommandTools(
-  server: McpServer,
+  server: ToolRegistrationTarget,
   discordManager: DiscordClientManager,
   logger: Logger,
 ) {
@@ -19,13 +44,9 @@ export function registerApplicationCommandTools(
     "list_application_commands",
     {
       title: "List Application Commands",
-      description:
-        "Get all application commands (slash commands) for a guild or globally",
+      description: "Get all application commands (slash commands) for a guild or globally",
       inputSchema: {
-        guildId: z
-          .string()
-          .optional()
-          .describe("Guild ID (omit for global commands)"),
+        guildId: z.string().optional().describe("Guild ID (omit for global commands)"),
       },
       outputSchema: {
         success: z.boolean(),
@@ -49,8 +70,10 @@ export function registerApplicationCommandTools(
       try {
         const client = discordManager.getClient();
 
-        let commands;
-        let scope;
+        let commands:
+          | Awaited<ReturnType<NonNullable<typeof client.application>["commands"]["fetch"]>>
+          | undefined;
+        let scope: string;
 
         if (guildId) {
           // Guild-specific commands
@@ -59,8 +82,12 @@ export function registerApplicationCommandTools(
           scope = `guild:${guild.name}`;
         } else {
           // Global commands
-          commands = await client.application!.commands.fetch();
+          commands = await client.application?.commands.fetch();
           scope = "global";
+        }
+
+        if (!commands) {
+          throw new InvalidInputError("guildId", "Could not fetch commands");
         }
 
         const commandList = commands.map((cmd) => ({
@@ -92,9 +119,10 @@ export function registerApplicationCommandTools(
           ],
           structuredContent: output,
         };
-      } catch (error: any) {
+      } catch (error) {
+        const errorMsg = getErrorMessage(error);
         logger.error("Failed to list application commands", {
-          error: error.message,
+          error: errorMsg,
           guildId,
         });
 
@@ -102,12 +130,12 @@ export function registerApplicationCommandTools(
           content: [
             {
               type: "text" as const,
-              text: `Error: ${error.message}`,
+              text: `Error: ${errorMsg}`,
             },
           ],
           structuredContent: {
             success: false,
-            error: error.message,
+            error: errorMsg,
           },
         };
       }
@@ -122,10 +150,7 @@ export function registerApplicationCommandTools(
       description: "Get detailed information about a specific application command",
       inputSchema: {
         commandId: z.string().describe("Application command ID"),
-        guildId: z
-          .string()
-          .optional()
-          .describe("Guild ID (omit for global commands)"),
+        guildId: z.string().optional().describe("Guild ID (omit for global commands)"),
       },
       outputSchema: {
         success: z.boolean(),
@@ -148,17 +173,27 @@ export function registerApplicationCommandTools(
       try {
         const client = discordManager.getClient();
 
-        let command;
+        let command: Awaited<
+          ReturnType<NonNullable<typeof client.application>["commands"]["fetch"]>
+        > extends infer T
+          ? T extends Map<string, infer U>
+            ? U
+            : T
+          : never;
 
         if (guildId) {
           const guild = await validateGuildAccess(client, guildId);
-          command = await guild.commands.fetch(commandId);
+          const fetched = await guild.commands.fetch(commandId);
+          if (!fetched) {
+            throw new InvalidInputError("commandId", "Command not found");
+          }
+          command = fetched;
         } else {
-          command = await client.application!.commands.fetch(commandId);
-        }
-
-        if (!command) {
-          throw new InvalidInputError("commandId", "Command not found");
+          const fetched = await client.application?.commands.fetch(commandId);
+          if (!fetched) {
+            throw new InvalidInputError("commandId", "Command not found");
+          }
+          command = fetched;
         }
 
         const commandDetails = {
@@ -170,8 +205,11 @@ export function registerApplicationCommandTools(
             type: ApplicationCommandOptionType[opt.type],
             name: opt.name,
             description: opt.description,
-            required: (opt as any).required || false,
-            choices: (opt as any).choices || [],
+            required: "required" in opt ? (opt.required as boolean) : false,
+            choices:
+              "choices" in opt
+                ? (opt.choices as Array<{ name: string; value: string | number }>)
+                : [],
           })),
           defaultMemberPermissions: command.defaultMemberPermissions?.toString() || null,
           dmPermission: command.dmPermission,
@@ -197,9 +235,10 @@ export function registerApplicationCommandTools(
           ],
           structuredContent: output,
         };
-      } catch (error: any) {
+      } catch (error) {
+        const errorMsg = getErrorMessage(error);
         logger.error("Failed to get application command", {
-          error: error.message,
+          error: errorMsg,
           commandId,
           guildId,
         });
@@ -208,12 +247,12 @@ export function registerApplicationCommandTools(
           content: [
             {
               type: "text" as const,
-              text: `Error: ${error.message}`,
+              text: `Error: ${errorMsg}`,
             },
           ],
           structuredContent: {
             success: false,
-            error: error.message,
+            error: errorMsg,
           },
         };
       }
@@ -225,8 +264,7 @@ export function registerApplicationCommandTools(
     "create_application_command",
     {
       title: "Create Application Command",
-      description:
-        "Create a new slash command, user context menu, or message context menu command",
+      description: "Create a new slash command, user context menu, or message context menu command",
       inputSchema: {
         name: z
           .string()
@@ -234,11 +272,7 @@ export function registerApplicationCommandTools(
           .max(32)
           .regex(/^[\w-]{1,32}$/)
           .describe("Command name (lowercase, alphanumeric, hyphens)"),
-        description: z
-          .string()
-          .min(1)
-          .max(100)
-          .describe("Command description"),
+        description: z.string().min(1).max(100).describe("Command description"),
         type: z
           .enum(["CHAT_INPUT", "USER", "MESSAGE"])
           .optional()
@@ -274,18 +308,12 @@ export function registerApplicationCommandTools(
           )
           .optional()
           .describe("Command options (for CHAT_INPUT type)"),
-        guildId: z
-          .string()
-          .optional()
-          .describe("Guild ID (omit for global command)"),
+        guildId: z.string().optional().describe("Guild ID (omit for global command)"),
         defaultMemberPermissions: z
           .string()
           .optional()
           .describe("Default required permissions (permission bit string)"),
-        dmPermission: z
-          .boolean()
-          .optional()
-          .describe("Enable in DMs (default: true)"),
+        dmPermission: z.boolean().optional().describe("Enable in DMs (default: true)"),
         nsfw: z.boolean().optional().describe("Mark command as NSFW"),
       },
       outputSchema: {
@@ -313,106 +341,67 @@ export function registerApplicationCommandTools(
       try {
         const client = discordManager.getClient();
 
-        const typeMap: Record<string, ApplicationCommandType> = {
-          CHAT_INPUT: ApplicationCommandType.ChatInput,
-          USER: ApplicationCommandType.User,
-          MESSAGE: ApplicationCommandType.Message,
-        };
-
-        const optionTypeMap: Record<string, ApplicationCommandOptionType> = {
-          SUB_COMMAND: ApplicationCommandOptionType.Subcommand,
-          SUB_COMMAND_GROUP: ApplicationCommandOptionType.SubcommandGroup,
-          STRING: ApplicationCommandOptionType.String,
-          INTEGER: ApplicationCommandOptionType.Integer,
-          BOOLEAN: ApplicationCommandOptionType.Boolean,
-          USER: ApplicationCommandOptionType.User,
-          CHANNEL: ApplicationCommandOptionType.Channel,
-          ROLE: ApplicationCommandOptionType.Role,
-          MENTIONABLE: ApplicationCommandOptionType.Mentionable,
-          NUMBER: ApplicationCommandOptionType.Number,
-          ATTACHMENT: ApplicationCommandOptionType.Attachment,
-        };
-
-        const commandData: any = {
+        const commandData = {
           name,
           description: type === "CHAT_INPUT" ? description : "",
           type: typeMap[type],
-        };
+          ...(type === "CHAT_INPUT" &&
+            options && {
+              options: options.map((opt) => ({
+                type: optionTypeMap[opt.type],
+                name: opt.name,
+                description: opt.description,
+                required: opt.required,
+                choices: opt.choices,
+              })),
+            }),
+          ...(defaultMemberPermissions !== undefined && { defaultMemberPermissions }),
+          ...(dmPermission !== undefined && { dmPermission }),
+          ...(nsfw !== undefined && { nsfw }),
+        } as ApplicationCommandDataResolvable;
 
-        if (type === "CHAT_INPUT" && options) {
-          commandData.options = options.map((opt) => ({
-            type: optionTypeMap[opt.type],
-            name: opt.name,
-            description: opt.description,
-            required: opt.required,
-            choices: opt.choices,
-          }));
-        }
-
-        if (defaultMemberPermissions !== undefined) {
-          commandData.defaultMemberPermissions = defaultMemberPermissions;
-        }
-        if (dmPermission !== undefined) {
-          commandData.dmPermission = dmPermission;
-        }
-        if (nsfw !== undefined) {
-          commandData.nsfw = nsfw;
-        }
-
-        let command;
-        let scope;
+        let scope: string;
+        let createdCommand: ApplicationCommand | undefined;
 
         if (guildId) {
           const guild = await validateGuildAccess(client, guildId);
-          command = await guild.commands.create(commandData);
+          createdCommand = await guild.commands.create(commandData);
           scope = `guild:${guild.name}`;
         } else {
-          command = await client.application!.commands.create(commandData);
+          createdCommand = await client.application?.commands.create(commandData);
           scope = "global";
         }
 
-        const output = {
-          success: true,
-          command: {
-            id: command.id,
-            name: command.name,
-            type: ApplicationCommandType[command.type],
-          },
-        };
+        if (!createdCommand) {
+          throw new InvalidInputError("command", "Failed to create command");
+        }
 
         logger.info("Created application command", {
-          commandId: command.id,
+          commandId: createdCommand.id,
           name,
           guildId: guildId || "global",
         });
 
         return {
           content: [
-            {
-              type: "text" as const,
-              text: `Created application command "/${name}" (${scope})`,
-            },
-          ],
-          structuredContent: output,
-        };
-      } catch (error: any) {
-        logger.error("Failed to create application command", {
-          error: error.message,
-          name,
-          guildId,
-        });
-
-        return {
-          content: [
-            {
-              type: "text" as const,
-              text: `Error: ${error.message}`,
-            },
+            { type: "text" as const, text: `Created application command "/${name}" (${scope})` },
           ],
           structuredContent: {
-            success: false,
-            error: error.message,
+            success: true,
+            command: {
+              id: createdCommand.id,
+              name: createdCommand.name,
+              type: ApplicationCommandType[createdCommand.type],
+            },
           },
+        };
+      } catch (error) {
+        const errorMsg = getErrorMessage(error);
+        logger.error("Failed to create application command", { error: errorMsg, name, guildId });
+
+        return {
+          content: [{ type: "text" as const, text: `Error: ${errorMsg}` }],
+          structuredContent: { success: false, error: errorMsg },
         };
       }
     },
@@ -433,12 +422,7 @@ export function registerApplicationCommandTools(
           .regex(/^[\w-]{1,32}$/)
           .optional()
           .describe("New command name"),
-        description: z
-          .string()
-          .min(1)
-          .max(100)
-          .optional()
-          .describe("New description"),
+        description: z.string().min(1).max(100).optional().describe("New description"),
         options: z
           .array(
             z.object({
@@ -470,14 +454,8 @@ export function registerApplicationCommandTools(
           )
           .optional()
           .describe("New options (replaces existing)"),
-        guildId: z
-          .string()
-          .optional()
-          .describe("Guild ID (omit for global commands)"),
-        defaultMemberPermissions: z
-          .string()
-          .optional()
-          .describe("New default permissions"),
+        guildId: z.string().optional().describe("Guild ID (omit for global commands)"),
+        defaultMemberPermissions: z.string().optional().describe("New default permissions"),
         dmPermission: z.boolean().optional().describe("New DM permission"),
         nsfw: z.boolean().optional().describe("New NSFW flag"),
       },
@@ -505,13 +483,13 @@ export function registerApplicationCommandTools(
       try {
         const client = discordManager.getClient();
 
-        let command;
+        let command: ApplicationCommand | undefined;
 
         if (guildId) {
           const guild = await validateGuildAccess(client, guildId);
           command = await guild.commands.fetch(commandId);
         } else {
-          command = await client.application!.commands.fetch(commandId);
+          command = await client.application?.commands.fetch(commandId);
         }
 
         if (!command) {
@@ -532,7 +510,7 @@ export function registerApplicationCommandTools(
           ATTACHMENT: ApplicationCommandOptionType.Attachment,
         };
 
-        const updates: any = {};
+        const updates: Record<string, unknown> = {};
 
         if (name !== undefined) updates.name = name;
         if (description !== undefined) updates.description = description;
@@ -575,9 +553,10 @@ export function registerApplicationCommandTools(
           ],
           structuredContent: output,
         };
-      } catch (error: any) {
+      } catch (error) {
+        const errorMsg = getErrorMessage(error);
         logger.error("Failed to modify application command", {
-          error: error.message,
+          error: errorMsg,
           commandId,
           guildId,
         });
@@ -586,12 +565,12 @@ export function registerApplicationCommandTools(
           content: [
             {
               type: "text" as const,
-              text: `Error: ${error.message}`,
+              text: `Error: ${errorMsg}`,
             },
           ],
           structuredContent: {
             success: false,
-            error: error.message,
+            error: errorMsg,
           },
         };
       }
@@ -606,10 +585,7 @@ export function registerApplicationCommandTools(
       description: "Delete an application command from the guild or globally",
       inputSchema: {
         commandId: z.string().describe("Application command ID to delete"),
-        guildId: z
-          .string()
-          .optional()
-          .describe("Guild ID (omit for global commands)"),
+        guildId: z.string().optional().describe("Guild ID (omit for global commands)"),
       },
       outputSchema: {
         success: z.boolean(),
@@ -621,24 +597,24 @@ export function registerApplicationCommandTools(
       try {
         const client = discordManager.getClient();
 
-        let command;
-        let scope;
+        let scope: string;
+        let fetchedCommand: ApplicationCommand | undefined;
 
         if (guildId) {
           const guild = await validateGuildAccess(client, guildId);
-          command = await guild.commands.fetch(commandId);
+          fetchedCommand = await guild.commands.fetch(commandId);
           scope = `guild:${guild.name}`;
         } else {
-          command = await client.application!.commands.fetch(commandId);
+          fetchedCommand = await client.application?.commands.fetch(commandId);
           scope = "global";
         }
 
-        if (!command) {
+        if (!fetchedCommand) {
           throw new InvalidInputError("commandId", "Command not found");
         }
 
-        const commandName = command.name;
-        await command.delete();
+        const commandName = fetchedCommand.name;
+        await fetchedCommand.delete();
 
         const output = {
           success: true,
@@ -659,9 +635,10 @@ export function registerApplicationCommandTools(
           ],
           structuredContent: output,
         };
-      } catch (error: any) {
+      } catch (error) {
+        const errorMsg = getErrorMessage(error);
         logger.error("Failed to delete application command", {
-          error: error.message,
+          error: errorMsg,
           commandId,
           guildId,
         });
@@ -670,12 +647,12 @@ export function registerApplicationCommandTools(
           content: [
             {
               type: "text" as const,
-              text: `Error: ${error.message}`,
+              text: `Error: ${errorMsg}`,
             },
           ],
           structuredContent: {
             success: false,
-            error: error.message,
+            error: errorMsg,
           },
         };
       }
@@ -687,25 +664,19 @@ export function registerApplicationCommandTools(
     "bulk_overwrite_commands",
     {
       title: "Bulk Overwrite Application Commands",
-      description:
-        "Replace all application commands with a new set (useful for syncing)",
+      description: "Replace all application commands with a new set (useful for syncing)",
       inputSchema: {
         commands: z
           .array(
             z.object({
               name: z.string(),
               description: z.string(),
-              type: z
-                .enum(["CHAT_INPUT", "USER", "MESSAGE"])
-                .optional(),
+              type: z.enum(["CHAT_INPUT", "USER", "MESSAGE"]).optional(),
               options: z.array(z.any()).optional(),
             }),
           )
           .describe("Array of commands to set (replaces all existing)"),
-        guildId: z
-          .string()
-          .optional()
-          .describe("Guild ID (omit for global commands)"),
+        guildId: z.string().optional().describe("Guild ID (omit for global commands)"),
       },
       outputSchema: {
         success: z.boolean(),
@@ -731,41 +702,46 @@ export function registerApplicationCommandTools(
           options: cmd.options || [],
         }));
 
-        let result;
-        let scope;
+        let scope: string;
+        let setResult: Collection<string, ApplicationCommand> | undefined;
 
         if (guildId) {
           const guild = await validateGuildAccess(client, guildId);
-          result = await guild.commands.set(commandData);
+          setResult = await guild.commands.set(commandData);
           scope = `guild:${guild.name}`;
         } else {
-          result = await client.application!.commands.set(commandData);
+          setResult = await client.application?.commands.set(commandData);
           scope = "global";
+        }
+
+        if (!setResult) {
+          throw new Error("Failed to set commands");
         }
 
         const output = {
           success: true,
-          count: result.size,
+          count: setResult.size,
           scope,
         };
 
         logger.info("Bulk overwrote application commands", {
           guildId: guildId || "global",
-          count: result.size,
+          commandsSet: setResult.size,
         });
 
         return {
           content: [
             {
               type: "text" as const,
-              text: `Synchronized ${result.size} application commands (${scope})`,
+              text: `Synchronized ${setResult.size} application commands (${scope})`,
             },
           ],
           structuredContent: output,
         };
-      } catch (error: any) {
+      } catch (error) {
+        const errorMsg = getErrorMessage(error);
         logger.error("Failed to bulk overwrite commands", {
-          error: error.message,
+          error: errorMsg,
           guildId,
         });
 
@@ -773,12 +749,12 @@ export function registerApplicationCommandTools(
           content: [
             {
               type: "text" as const,
-              text: `Error: ${error.message}`,
+              text: `Error: ${errorMsg}`,
             },
           ],
           structuredContent: {
             success: false,
-            error: error.message,
+            error: errorMsg,
           },
         };
       }

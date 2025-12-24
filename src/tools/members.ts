@@ -1,15 +1,13 @@
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { DiscordClientManager } from "../discord/client.js";
-import { Logger } from "../utils/logger.js";
-import { z } from "zod";
-import {
-  PermissionDeniedError,
-  GuildNotFoundError,
-} from "../errors/discord.js";
 import { PermissionFlagsBits } from "discord.js";
+import { z } from "zod";
+import type { DiscordClientManager } from "../discord/client.js";
+import { GuildNotFoundError, PermissionDeniedError } from "../errors/discord.js";
+import type { ToolRegistrationTarget } from "../registry/tool-adapter.js";
+import { getErrorMessage } from "../utils/errors.js";
+import type { Logger } from "../utils/logger.js";
 
 export function registerMemberTools(
-  server: McpServer,
+  server: ToolRegistrationTarget,
   discordManager: DiscordClientManager,
   logger: Logger,
 ) {
@@ -22,10 +20,7 @@ export function registerMemberTools(
       inputSchema: {
         guildId: z.string().describe("Server/Guild ID"),
         userId: z.string().describe("User ID to kick"),
-        reason: z
-          .string()
-          .optional()
-          .describe("Reason for kick (shown in audit log)"),
+        reason: z.string().optional().describe("Reason for kick (shown in audit log)"),
       },
       outputSchema: {
         success: z.boolean(),
@@ -82,23 +77,24 @@ export function registerMemberTools(
           ],
           structuredContent: output,
         };
-      } catch (error: any) {
+      } catch (error) {
+        const errorMsg = getErrorMessage(error);
         logger.error("Failed to kick member", {
-          error: error.message,
+          error: errorMsg,
           guildId,
           userId,
         });
 
         const output = {
           success: false,
-          error: error.message,
+          error: errorMsg,
         };
 
         return {
           content: [
             {
               type: "text" as const,
-              text: `Failed to kick member: ${error.message}`,
+              text: `Failed to kick member: ${errorMsg}`,
             },
           ],
           structuredContent: output,
@@ -117,10 +113,7 @@ export function registerMemberTools(
       inputSchema: {
         guildId: z.string().describe("Server/Guild ID"),
         userId: z.string().describe("User ID to ban"),
-        reason: z
-          .string()
-          .optional()
-          .describe("Reason for ban (shown in audit log)"),
+        reason: z.string().optional().describe("Reason for ban (shown in audit log)"),
         deleteMessageDays: z
           .number()
           .int()
@@ -156,9 +149,7 @@ export function registerMemberTools(
 
         // Check role hierarchy if member is in server
         if (member) {
-          if (
-            member.roles.highest.position >= botMember.roles.highest.position
-          ) {
+          if (member.roles.highest.position >= botMember.roles.highest.position) {
             throw new Error(
               "Cannot ban this member - their highest role is equal to or higher than the bot's highest role",
             );
@@ -171,9 +162,7 @@ export function registerMemberTools(
 
         await guild.members.ban(userId, {
           reason,
-          deleteMessageSeconds: deleteMessageDays
-            ? deleteMessageDays * 24 * 60 * 60
-            : undefined,
+          deleteMessageSeconds: deleteMessageDays ? deleteMessageDays * 24 * 60 * 60 : undefined,
         });
 
         const output = {
@@ -193,23 +182,24 @@ export function registerMemberTools(
           ],
           structuredContent: output,
         };
-      } catch (error: any) {
+      } catch (error) {
+        const errorMsg = getErrorMessage(error);
         logger.error("Failed to ban member", {
-          error: error.message,
+          error: errorMsg,
           guildId,
           userId,
         });
 
         const output = {
           success: false,
-          error: error.message,
+          error: errorMsg,
         };
 
         return {
           content: [
             {
               type: "text" as const,
-              text: `Failed to ban member: ${error.message}`,
+              text: `Failed to ban member: ${errorMsg}`,
             },
           ],
           structuredContent: output,
@@ -228,10 +218,7 @@ export function registerMemberTools(
       inputSchema: {
         guildId: z.string().describe("Server/Guild ID"),
         userId: z.string().describe("User ID to unban"),
-        reason: z
-          .string()
-          .optional()
-          .describe("Reason for unban (shown in audit log)"),
+        reason: z.string().optional().describe("Reason for unban (shown in audit log)"),
       },
       outputSchema: {
         success: z.boolean(),
@@ -272,23 +259,24 @@ export function registerMemberTools(
           ],
           structuredContent: output,
         };
-      } catch (error: any) {
+      } catch (error) {
+        const errorMsg = getErrorMessage(error);
         logger.error("Failed to unban member", {
-          error: error.message,
+          error: errorMsg,
           guildId,
           userId,
         });
 
         const output = {
           success: false,
-          error: error.message,
+          error: errorMsg,
         };
 
         return {
           content: [
             {
               type: "text" as const,
-              text: `Failed to unban member: ${error.message}`,
+              text: `Failed to unban member: ${errorMsg}`,
             },
           ],
           structuredContent: output,
@@ -314,10 +302,7 @@ export function registerMemberTools(
           .min(1)
           .max(40320)
           .describe("Timeout duration in minutes (max 28 days)"),
-        reason: z
-          .string()
-          .optional()
-          .describe("Reason for timeout (shown in audit log)"),
+        reason: z.string().optional().describe("Reason for timeout (shown in audit log)"),
       },
       outputSchema: {
         success: z.boolean(),
@@ -381,23 +366,24 @@ export function registerMemberTools(
           ],
           structuredContent: output,
         };
-      } catch (error: any) {
+      } catch (error) {
+        const errorMsg = getErrorMessage(error);
         logger.error("Failed to timeout member", {
-          error: error.message,
+          error: errorMsg,
           guildId,
           userId,
         });
 
         const output = {
           success: false,
-          error: error.message,
+          error: errorMsg,
         };
 
         return {
           content: [
             {
               type: "text" as const,
-              text: `Failed to timeout member: ${error.message}`,
+              text: `Failed to timeout member: ${errorMsg}`,
             },
           ],
           structuredContent: output,
@@ -416,10 +402,7 @@ export function registerMemberTools(
       inputSchema: {
         guildId: z.string().describe("Server/Guild ID"),
         userId: z.string().describe("User ID to remove timeout from"),
-        reason: z
-          .string()
-          .optional()
-          .describe("Reason for removing timeout (shown in audit log)"),
+        reason: z.string().optional().describe("Reason for removing timeout (shown in audit log)"),
       },
       outputSchema: {
         success: z.boolean(),
@@ -468,23 +451,24 @@ export function registerMemberTools(
           ],
           structuredContent: output,
         };
-      } catch (error: any) {
+      } catch (error) {
+        const errorMsg = getErrorMessage(error);
         logger.error("Failed to remove timeout", {
-          error: error.message,
+          error: errorMsg,
           guildId,
           userId,
         });
 
         const output = {
           success: false,
-          error: error.message,
+          error: errorMsg,
         };
 
         return {
           content: [
             {
               type: "text" as const,
-              text: `Failed to remove timeout: ${error.message}`,
+              text: `Failed to remove timeout: ${errorMsg}`,
             },
           ],
           structuredContent: output,
@@ -561,8 +545,7 @@ export function registerMemberTools(
             })),
           isBot: member.user.bot,
           isOwner: guild.ownerId === member.user.id,
-          timeoutUntil:
-            member.communicationDisabledUntil?.toISOString() || null,
+          timeoutUntil: member.communicationDisabledUntil?.toISOString() || null,
           avatar: member.user.avatar,
         };
 
@@ -582,23 +565,24 @@ export function registerMemberTools(
           ],
           structuredContent: output,
         };
-      } catch (error: any) {
+      } catch (error) {
+        const errorMsg = getErrorMessage(error);
         logger.error("Failed to get member info", {
-          error: error.message,
+          error: errorMsg,
           guildId,
           userId,
         });
 
         const output = {
           success: false,
-          error: error.message,
+          error: errorMsg,
         };
 
         return {
           content: [
             {
               type: "text" as const,
-              text: `Failed to get member info: ${error.message}`,
+              text: `Failed to get member info: ${errorMsg}`,
             },
           ],
           structuredContent: output,
@@ -624,10 +608,7 @@ export function registerMemberTools(
           .optional()
           .default(100)
           .describe("Max members to return (default 100)"),
-        roleId: z
-          .string()
-          .optional()
-          .describe("Filter by role ID (only members with this role)"),
+        roleId: z.string().optional().describe("Filter by role ID (only members with this role)"),
         botsOnly: z.boolean().optional().describe("Only return bot accounts"),
       },
       outputSchema: {
@@ -664,9 +645,7 @@ export function registerMemberTools(
         let filteredMembers = Array.from(members.values());
 
         if (roleId) {
-          filteredMembers = filteredMembers.filter((m) =>
-            m.roles.cache.has(roleId),
-          );
+          filteredMembers = filteredMembers.filter((m) => m.roles.cache.has(roleId));
         }
 
         if (botsOnly) {
@@ -704,22 +683,23 @@ export function registerMemberTools(
           ],
           structuredContent: output,
         };
-      } catch (error: any) {
+      } catch (error) {
+        const errorMsg = getErrorMessage(error);
         logger.error("Failed to list members", {
-          error: error.message,
+          error: errorMsg,
           guildId,
         });
 
         const output = {
           success: false,
-          error: error.message,
+          error: errorMsg,
         };
 
         return {
           content: [
             {
               type: "text" as const,
-              text: `Failed to list members: ${error.message}`,
+              text: `Failed to list members: ${errorMsg}`,
             },
           ],
           structuredContent: output,
@@ -739,10 +719,7 @@ export function registerMemberTools(
         guildId: z.string().describe("Server/Guild ID"),
         userId: z.string().describe("User ID to assign role to"),
         roleId: z.string().describe("Role ID to assign"),
-        reason: z
-          .string()
-          .optional()
-          .describe("Reason for role assignment (shown in audit log)"),
+        reason: z.string().optional().describe("Reason for role assignment (shown in audit log)"),
       },
       outputSchema: {
         success: z.boolean(),
@@ -810,9 +787,10 @@ export function registerMemberTools(
           ],
           structuredContent: output,
         };
-      } catch (error: any) {
+      } catch (error) {
+        const errorMsg = getErrorMessage(error);
         logger.error("Failed to assign role", {
-          error: error.message,
+          error: errorMsg,
           guildId,
           userId,
           roleId,
@@ -820,14 +798,14 @@ export function registerMemberTools(
 
         const output = {
           success: false,
-          error: error.message,
+          error: errorMsg,
         };
 
         return {
           content: [
             {
               type: "text" as const,
-              text: `Failed to assign role: ${error.message}`,
+              text: `Failed to assign role: ${errorMsg}`,
             },
           ],
           structuredContent: output,
@@ -847,10 +825,7 @@ export function registerMemberTools(
         guildId: z.string().describe("Server/Guild ID"),
         userId: z.string().describe("User ID to remove role from"),
         roleId: z.string().describe("Role ID to remove"),
-        reason: z
-          .string()
-          .optional()
-          .describe("Reason for role removal (shown in audit log)"),
+        reason: z.string().optional().describe("Reason for role removal (shown in audit log)"),
       },
       outputSchema: {
         success: z.boolean(),
@@ -918,9 +893,10 @@ export function registerMemberTools(
           ],
           structuredContent: output,
         };
-      } catch (error: any) {
+      } catch (error) {
+        const errorMsg = getErrorMessage(error);
         logger.error("Failed to remove role", {
-          error: error.message,
+          error: errorMsg,
           guildId,
           userId,
           roleId,
@@ -928,14 +904,14 @@ export function registerMemberTools(
 
         const output = {
           success: false,
-          error: error.message,
+          error: errorMsg,
         };
 
         return {
           content: [
             {
               type: "text" as const,
-              text: `Failed to remove role: ${error.message}`,
+              text: `Failed to remove role: ${errorMsg}`,
             },
           ],
           structuredContent: output,

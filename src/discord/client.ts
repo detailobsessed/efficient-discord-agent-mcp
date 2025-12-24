@@ -1,6 +1,6 @@
 import { Client, Events, GatewayIntentBits } from "discord.js";
-import { Logger } from "../utils/logger.js";
 import { DiscordNotConnectedError } from "../errors/discord.js";
+import type { Logger } from "../utils/logger.js";
 
 export class DiscordClientManager {
   private client: Client | null = null;
@@ -44,7 +44,7 @@ export class DiscordClientManager {
       this.connected = true;
       this.reconnectAttempts = 0;
       this.logger.info("Discord client connected successfully");
-    } catch (error: any) {
+    } catch (error) {
       this.logger.error("Failed to connect to Discord", {
         error: error.message,
       });
@@ -103,8 +103,7 @@ export class DiscordClientManager {
     }
 
     this.reconnectAttempts++;
-    const backoff =
-      this.reconnectBackoffMs * Math.pow(2, this.reconnectAttempts - 1);
+    const backoff = this.reconnectBackoffMs * 2 ** (this.reconnectAttempts - 1);
 
     this.logger.info(
       `Reconnect attempt ${this.reconnectAttempts}/${this.maxReconnectAttempts} in ${backoff}ms`,
@@ -114,7 +113,7 @@ export class DiscordClientManager {
 
     try {
       await this.connect();
-    } catch (error: any) {
+    } catch (error) {
       this.logger.error("Reconnection attempt failed", {
         error: error.message,
       });

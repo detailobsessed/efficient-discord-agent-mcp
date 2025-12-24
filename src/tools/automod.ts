@@ -1,22 +1,173 @@
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { DiscordClientManager } from "../discord/client.js";
-import { Logger } from "../utils/logger.js";
-import { z } from "zod";
 import {
-  PermissionDeniedError,
-  InvalidInputError,
-} from "../errors/discord.js";
-import { validateGuildAccess } from "../utils/guild-validation.js";
-import {
-  PermissionFlagsBits,
-  AutoModerationRuleTriggerType,
-  AutoModerationRuleEventType,
   AutoModerationActionType,
+  type AutoModerationRuleEditOptions,
+  AutoModerationRuleEventType,
   AutoModerationRuleKeywordPresetType,
+  AutoModerationRuleTriggerType,
+  type AutoModerationTriggerMetadata,
+  PermissionFlagsBits,
 } from "discord.js";
+import { z } from "zod";
+import type { DiscordClientManager } from "../discord/client.js";
+import { InvalidInputError, PermissionDeniedError } from "../errors/discord.js";
+import type { ToolRegistrationTarget } from "../registry/tool-adapter.js";
+import { getErrorMessage } from "../utils/errors.js";
+import { getBotMember, validateGuildAccess } from "../utils/guild-validation.js";
+import type { Logger } from "../utils/logger.js";
+
+// Type maps for automod - defined outside function to avoid recreation
+const triggerTypeMap: Record<string, AutoModerationRuleTriggerType> = {
+  KEYWORD: AutoModerationRuleTriggerType.Keyword,
+  SPAM: AutoModerationRuleTriggerType.Spam,
+  KEYWORD_PRESET: AutoModerationRuleTriggerType.KeywordPreset,
+  MENTION_SPAM: AutoModerationRuleTriggerType.MentionSpam,
+  MEMBER_PROFILE: AutoModerationRuleTriggerType.MemberProfile,
+};
+
+const eventTypeMap: Record<string, AutoModerationRuleEventType> = {
+  MESSAGE_SEND: AutoModerationRuleEventType.MessageSend,
+  MEMBER_UPDATE: AutoModerationRuleEventType.MemberUpdate,
+};
+
+const presetMap: Record<string, AutoModerationRuleKeywordPresetType> = {
+  PROFANITY: AutoModerationRuleKeywordPresetType.Profanity,
+  SEXUAL_CONTENT: AutoModerationRuleKeywordPresetType.SexualContent,
+  SLURS: AutoModerationRuleKeywordPresetType.Slurs,
+};
+
+const actionTypeMap: Record<string, AutoModerationActionType> = {
+  BLOCK_MESSAGE: AutoModerationActionType.BlockMessage,
+  SEND_ALERT_MESSAGE: AutoModerationActionType.SendAlertMessage,
+  TIMEOUT: AutoModerationActionType.Timeout,
+};
+
+/**
+ * Builds trigger metadata based on trigger type
+ */
+function buildTriggerMetadata(
+  triggerType: string,
+  keywords?: string[],
+  regexPatterns?: string[],
+  allowList?: string[],
+  presets?: string[],
+  mentionLimit?: number,
+): Record<string, unknown> {
+  const metadata: Record<string, unknown> = {};
+
+  if (triggerType === "KEYWORD") {
+    if (keywords) metadata.keywordFilter = keywords;
+    if (regexPatterns) metadata.regexPatterns = regexPatterns;
+    if (allowList) metadata.allowList = allowList;
+  } else if (triggerType === "KEYWORD_PRESET") {
+    if (presets) metadata.presets = presets.map((p) => presetMap[p]);
+    if (allowList) metadata.allowList = allowList;
+  } else if (triggerType === "MENTION_SPAM") {
+    if (mentionLimit) metadata.mentionTotalLimit = mentionLimit;
+  }
+
+  return metadata;
+}
+
+/**
+ * Maps action inputs to Discord action objects
+ */
+function mapActions(
+  actions: Array<{
+    type: string;
+    channelId?: string;
+    customMessage?: string;
+    durationSeconds?: number;
+  }>,
+) {
+  return actions.map((action) => {
+    const baseAction: {
+      type: AutoModerationActionType;
+      metadata?: { channelId?: string; customMessage?: string; durationSeconds?: number };
+    } = { type: actionTypeMap[action.type] };
+
+    if (action.type === "SEND_ALERT_MESSAGE" && action.channelId) {
+      baseAction.metadata = { channelId: action.channelId };
+      if (action.customMessage) baseAction.metadata.customMessage = action.customMessage;
+    } else if (action.type === "TIMEOUT" && action.durationSeconds) {
+      baseAction.metadata = { durationSeconds: action.durationSeconds };
+    }
+
+    return baseAction;
+  });
+}
+
+interface TriggerUpdateParams {
+  keywords?: string[];
+  regexPatterns?: string[];
+  allowList?: string[];
+  mentionLimit?: number;
+}
+
+/**
+ * Builds trigger metadata updates for modify_automod_rule
+ */
+function buildTriggerUpdates(
+  existingMetadata: AutoModerationTriggerMetadata,
+  params: TriggerUpdateParams,
+): Record<string, unknown> | null {
+  const { keywords, regexPatterns, allowList, mentionLimit } = params;
+  const hasUpdates =
+    keywords !== undefined ||
+    regexPatterns !== undefined ||
+    allowList !== undefined ||
+    mentionLimit !== undefined;
+
+  if (!hasUpdates) return null;
+
+  return {
+    keywordFilter: existingMetadata.keywordFilter,
+    regexPatterns: existingMetadata.regexPatterns,
+    allowList: existingMetadata.allowList,
+    mentionTotalLimit: existingMetadata.mentionTotalLimit,
+    mentionRaidProtectionEnabled: existingMetadata.mentionRaidProtectionEnabled,
+    presets: existingMetadata.presets,
+    ...(keywords !== undefined && { keywordFilter: keywords }),
+    ...(regexPatterns !== undefined && { regexPatterns }),
+    ...(allowList !== undefined && { allowList }),
+    ...(mentionLimit !== undefined && { mentionTotalLimit: mentionLimit }),
+  };
+}
+
+interface RuleUpdateParams {
+  name?: string;
+  enabled?: boolean;
+  actions?: Array<{
+    type: string;
+    channelId?: string;
+    customMessage?: string;
+    durationSeconds?: number;
+  }>;
+  exemptRoles?: string[];
+  exemptChannels?: string[];
+  reason?: string;
+}
+
+/**
+ * Builds the update options object for modify_automod_rule
+ */
+function buildRuleUpdateOptions(
+  params: RuleUpdateParams,
+  triggerMetadata: Record<string, unknown> | null,
+): AutoModerationRuleEditOptions {
+  const { name, enabled, actions, exemptRoles, exemptChannels, reason } = params;
+  return {
+    ...(name !== undefined && { name }),
+    ...(enabled !== undefined && { enabled }),
+    ...(triggerMetadata && { triggerMetadata }),
+    ...(actions !== undefined && { actions: mapActions(actions) }),
+    ...(exemptRoles !== undefined && { exemptRoles }),
+    ...(exemptChannels !== undefined && { exemptChannels }),
+    ...(reason !== undefined && { reason }),
+  };
+}
 
 export function registerAutoModerationTools(
-  server: McpServer,
+  server: ToolRegistrationTarget,
   discordManager: DiscordClientManager,
   logger: Logger,
 ) {
@@ -55,7 +206,7 @@ export function registerAutoModerationTools(
         const guild = await validateGuildAccess(client, guildId);
 
         // Check permissions
-        const botMember = await guild.members.fetch(client.user!.id);
+        const botMember = await getBotMember(guild, client);
         if (!botMember.permissions.has(PermissionFlagsBits.ManageGuild)) {
           throw new PermissionDeniedError("ManageGuild", guildId);
         }
@@ -91,9 +242,10 @@ export function registerAutoModerationTools(
           ],
           structuredContent: output,
         };
-      } catch (error: any) {
+      } catch (error) {
+        const errorMsg = getErrorMessage(error);
         logger.error("Failed to list auto-mod rules", {
-          error: error.message,
+          error: errorMsg,
           guildId,
         });
 
@@ -101,12 +253,12 @@ export function registerAutoModerationTools(
           content: [
             {
               type: "text" as const,
-              text: `Error: ${error.message}`,
+              text: `Error: ${errorMsg}`,
             },
           ],
           structuredContent: {
             success: false,
-            error: error.message,
+            error: errorMsg,
           },
         };
       }
@@ -148,7 +300,7 @@ export function registerAutoModerationTools(
         const guild = await validateGuildAccess(client, guildId);
 
         // Check permissions
-        const botMember = await guild.members.fetch(client.user!.id);
+        const botMember = await getBotMember(guild, client);
         if (!botMember.permissions.has(PermissionFlagsBits.ManageGuild)) {
           throw new PermissionDeniedError("ManageGuild", guildId);
         }
@@ -191,9 +343,10 @@ export function registerAutoModerationTools(
           ],
           structuredContent: output,
         };
-      } catch (error: any) {
+      } catch (error) {
+        const errorMsg = getErrorMessage(error);
         logger.error("Failed to get auto-mod rule", {
-          error: error.message,
+          error: errorMsg,
           guildId,
           ruleId,
         });
@@ -202,12 +355,12 @@ export function registerAutoModerationTools(
           content: [
             {
               type: "text" as const,
-              text: `Error: ${error.message}`,
+              text: `Error: ${errorMsg}`,
             },
           ],
           structuredContent: {
             success: false,
-            error: error.message,
+            error: errorMsg,
           },
         };
       }
@@ -224,18 +377,9 @@ export function registerAutoModerationTools(
       inputSchema: {
         guildId: z.string().describe("Guild ID"),
         name: z.string().min(1).max(100).describe("Rule name"),
-        enabled: z
-          .boolean()
-          .optional()
-          .describe("Enable rule immediately (default: true)"),
+        enabled: z.boolean().optional().describe("Enable rule immediately (default: true)"),
         triggerType: z
-          .enum([
-            "KEYWORD",
-            "SPAM",
-            "KEYWORD_PRESET",
-            "MENTION_SPAM",
-            "MEMBER_PROFILE",
-          ])
+          .enum(["KEYWORD", "SPAM", "KEYWORD_PRESET", "MENTION_SPAM", "MEMBER_PROFILE"])
           .describe("Trigger type for the rule"),
         eventType: z
           .enum(["MESSAGE_SEND", "MEMBER_UPDATE"])
@@ -249,10 +393,7 @@ export function registerAutoModerationTools(
           .array(z.string())
           .optional()
           .describe("Regex patterns (for KEYWORD trigger)"),
-        allowList: z
-          .array(z.string())
-          .optional()
-          .describe("Keywords to allow (exceptions)"),
+        allowList: z.array(z.string()).optional().describe("Keywords to allow (exceptions)"),
         presets: z
           .array(z.enum(["PROFANITY", "SEXUAL_CONTENT", "SLURS"]))
           .optional()
@@ -273,10 +414,7 @@ export function registerAutoModerationTools(
             }),
           )
           .describe("Actions to take when rule triggers"),
-        exemptRoles: z
-          .array(z.string())
-          .optional()
-          .describe("Role IDs exempt from this rule"),
+        exemptRoles: z.array(z.string()).optional().describe("Role IDs exempt from this rule"),
         exemptChannels: z
           .array(z.string())
           .optional()
@@ -316,85 +454,27 @@ export function registerAutoModerationTools(
         const client = discordManager.getClient();
         const guild = await validateGuildAccess(client, guildId);
 
-        // Check permissions
-        const botMember = await guild.members.fetch(client.user!.id);
+        const botMember = await getBotMember(guild, client);
         if (!botMember.permissions.has(PermissionFlagsBits.ManageGuild)) {
           throw new PermissionDeniedError("ManageGuild", guildId);
         }
 
-        // Map trigger type
-        const triggerTypeMap: Record<string, AutoModerationRuleTriggerType> = {
-          KEYWORD: AutoModerationRuleTriggerType.Keyword,
-          SPAM: AutoModerationRuleTriggerType.Spam,
-          KEYWORD_PRESET: AutoModerationRuleTriggerType.KeywordPreset,
-          MENTION_SPAM: AutoModerationRuleTriggerType.MentionSpam,
-          MEMBER_PROFILE: AutoModerationRuleTriggerType.MemberProfile,
-        };
+        const triggerMetadata = buildTriggerMetadata(
+          triggerType,
+          keywords,
+          regexPatterns,
+          allowList,
+          presets,
+          mentionLimit,
+        );
+        const mappedActions = mapActions(actions);
 
-        const eventTypeMap: Record<string, AutoModerationRuleEventType> = {
-          MESSAGE_SEND: AutoModerationRuleEventType.MessageSend,
-          MEMBER_UPDATE: AutoModerationRuleEventType.MemberUpdate,
-        };
-
-        const presetMap: Record<
-          string,
-          AutoModerationRuleKeywordPresetType
-        > = {
-          PROFANITY: AutoModerationRuleKeywordPresetType.Profanity,
-          SEXUAL_CONTENT: AutoModerationRuleKeywordPresetType.SexualContent,
-          SLURS: AutoModerationRuleKeywordPresetType.Slurs,
-        };
-
-        const actionTypeMap: Record<string, AutoModerationActionType> = {
-          BLOCK_MESSAGE: AutoModerationActionType.BlockMessage,
-          SEND_ALERT_MESSAGE: AutoModerationActionType.SendAlertMessage,
-          TIMEOUT: AutoModerationActionType.Timeout,
-        };
-
-        // Build trigger metadata based on trigger type
-        const triggerMetadata: any = {};
-
-        if (triggerType === "KEYWORD") {
-          if (keywords) triggerMetadata.keywordFilter = keywords;
-          if (regexPatterns) triggerMetadata.regexPatterns = regexPatterns;
-          if (allowList) triggerMetadata.allowList = allowList;
-        } else if (triggerType === "KEYWORD_PRESET") {
-          if (presets) {
-            triggerMetadata.presets = presets.map((p) => presetMap[p]);
-          }
-          if (allowList) triggerMetadata.allowList = allowList;
-        } else if (triggerType === "MENTION_SPAM") {
-          if (mentionLimit) triggerMetadata.mentionTotalLimit = mentionLimit;
-        }
-
-        // Build actions
-        const mappedActions = actions.map((action) => {
-          const baseAction: any = {
-            type: actionTypeMap[action.type],
-          };
-
-          if (action.type === "SEND_ALERT_MESSAGE" && action.channelId) {
-            baseAction.metadata = { channelId: action.channelId };
-            if (action.customMessage) {
-              baseAction.metadata.customMessage = action.customMessage;
-            }
-          } else if (action.type === "TIMEOUT" && action.durationSeconds) {
-            baseAction.metadata = { durationSeconds: action.durationSeconds };
-          }
-
-          return baseAction;
-        });
-
-        // Create the rule
         const rule = await guild.autoModerationRules.create({
           name,
           enabled,
           triggerType: triggerTypeMap[triggerType],
           eventType: eventTypeMap[eventType],
-          triggerMetadata:
-            Object.keys(triggerMetadata).length > 0
-              ? triggerMetadata
-              : undefined,
+          triggerMetadata: Object.keys(triggerMetadata).length > 0 ? triggerMetadata : undefined,
           actions: mappedActions,
           exemptRoles: exemptRoles || [],
           exemptChannels: exemptChannels || [],
@@ -426,9 +506,10 @@ export function registerAutoModerationTools(
           ],
           structuredContent: output,
         };
-      } catch (error: any) {
+      } catch (error) {
+        const errorMsg = getErrorMessage(error);
         logger.error("Failed to create auto-mod rule", {
-          error: error.message,
+          error: errorMsg,
           guildId,
           name,
         });
@@ -437,12 +518,12 @@ export function registerAutoModerationTools(
           content: [
             {
               type: "text" as const,
-              text: `Error: ${error.message}`,
+              text: `Error: ${errorMsg}`,
             },
           ],
           structuredContent: {
             success: false,
-            error: error.message,
+            error: errorMsg,
           },
         };
       }
@@ -460,10 +541,7 @@ export function registerAutoModerationTools(
         ruleId: z.string().describe("Auto-moderation rule ID"),
         name: z.string().min(1).max(100).optional().describe("New rule name"),
         enabled: z.boolean().optional().describe("Enable/disable rule"),
-        keywords: z
-          .array(z.string())
-          .optional()
-          .describe("Updated keywords (replaces existing)"),
+        keywords: z.array(z.string()).optional().describe("Updated keywords (replaces existing)"),
         regexPatterns: z
           .array(z.string())
           .optional()
@@ -472,12 +550,7 @@ export function registerAutoModerationTools(
           .array(z.string())
           .optional()
           .describe("Updated allow list (replaces existing)"),
-        mentionLimit: z
-          .number()
-          .min(1)
-          .max(50)
-          .optional()
-          .describe("Updated mention limit"),
+        mentionLimit: z.number().min(1).max(50).optional().describe("Updated mention limit"),
         actions: z
           .array(
             z.object({
@@ -529,86 +602,26 @@ export function registerAutoModerationTools(
         const client = discordManager.getClient();
         const guild = await validateGuildAccess(client, guildId);
 
-        // Check permissions
-        const botMember = await guild.members.fetch(client.user!.id);
+        const botMember = await getBotMember(guild, client);
         if (!botMember.permissions.has(PermissionFlagsBits.ManageGuild)) {
           throw new PermissionDeniedError("ManageGuild", guildId);
         }
 
-        // Fetch existing rule
         const rule = await guild.autoModerationRules.fetch(ruleId);
-        if (!rule) {
-          throw new InvalidInputError("ruleId", "Rule not found");
-        }
+        if (!rule) throw new InvalidInputError("ruleId", "Rule not found");
 
-        const actionTypeMap: Record<string, AutoModerationActionType> = {
-          BLOCK_MESSAGE: AutoModerationActionType.BlockMessage,
-          SEND_ALERT_MESSAGE: AutoModerationActionType.SendAlertMessage,
-          TIMEOUT: AutoModerationActionType.Timeout,
-        };
+        const triggerMetadata = buildTriggerUpdates(rule.triggerMetadata, {
+          keywords,
+          regexPatterns,
+          allowList,
+          mentionLimit,
+        });
+        const updates = buildRuleUpdateOptions(
+          { name, enabled, actions, exemptRoles, exemptChannels, reason },
+          triggerMetadata,
+        );
 
-        // Build updates
-        const updates: any = {};
-
-        if (name !== undefined) updates.name = name;
-        if (enabled !== undefined) updates.enabled = enabled;
-
-        // Update trigger metadata if provided
-        if (
-          keywords !== undefined ||
-          regexPatterns !== undefined ||
-          allowList !== undefined ||
-          mentionLimit !== undefined
-        ) {
-          updates.triggerMetadata = { ...rule.triggerMetadata };
-
-          if (keywords !== undefined)
-            updates.triggerMetadata.keywordFilter = keywords;
-          if (regexPatterns !== undefined)
-            updates.triggerMetadata.regexPatterns = regexPatterns;
-          if (allowList !== undefined)
-            updates.triggerMetadata.allowList = allowList;
-          if (mentionLimit !== undefined)
-            updates.triggerMetadata.mentionTotalLimit = mentionLimit;
-        }
-
-        // Update actions if provided
-        if (actions !== undefined) {
-          updates.actions = actions.map((action) => {
-            const baseAction: any = {
-              type: actionTypeMap[action.type],
-            };
-
-            if (action.type === "SEND_ALERT_MESSAGE" && action.channelId) {
-              baseAction.metadata = { channelId: action.channelId };
-              if (action.customMessage) {
-                baseAction.metadata.customMessage = action.customMessage;
-              }
-            } else if (action.type === "TIMEOUT" && action.durationSeconds) {
-              baseAction.metadata = { durationSeconds: action.durationSeconds };
-            }
-
-            return baseAction;
-          });
-        }
-
-        if (exemptRoles !== undefined) updates.exemptRoles = exemptRoles;
-        if (exemptChannels !== undefined)
-          updates.exemptChannels = exemptChannels;
-        if (reason !== undefined) updates.reason = reason;
-
-        // Update the rule
         const updated = await rule.edit(updates);
-
-        const output = {
-          success: true,
-          rule: {
-            id: updated.id,
-            name: updated.name,
-            enabled: updated.enabled,
-          },
-        };
-
         logger.info("Modified auto-mod rule", { guildId, ruleId });
 
         return {
@@ -618,26 +631,18 @@ export function registerAutoModerationTools(
               text: `Updated auto-mod rule "${updated.name}" in ${guild.name}`,
             },
           ],
-          structuredContent: output,
+          structuredContent: {
+            success: true,
+            rule: { id: updated.id, name: updated.name, enabled: updated.enabled },
+          },
         };
-      } catch (error: any) {
-        logger.error("Failed to modify auto-mod rule", {
-          error: error.message,
-          guildId,
-          ruleId,
-        });
+      } catch (error) {
+        const errorMsg = getErrorMessage(error);
+        logger.error("Failed to modify auto-mod rule", { error: errorMsg, guildId, ruleId });
 
         return {
-          content: [
-            {
-              type: "text" as const,
-              text: `Error: ${error.message}`,
-            },
-          ],
-          structuredContent: {
-            success: false,
-            error: error.message,
-          },
+          content: [{ type: "text" as const, text: `Error: ${errorMsg}` }],
+          structuredContent: { success: false, error: errorMsg },
         };
       }
     },
@@ -666,7 +671,7 @@ export function registerAutoModerationTools(
         const guild = await validateGuildAccess(client, guildId);
 
         // Check permissions
-        const botMember = await guild.members.fetch(client.user!.id);
+        const botMember = await getBotMember(guild, client);
         if (!botMember.permissions.has(PermissionFlagsBits.ManageGuild)) {
           throw new PermissionDeniedError("ManageGuild", guildId);
         }
@@ -696,9 +701,10 @@ export function registerAutoModerationTools(
           ],
           structuredContent: output,
         };
-      } catch (error: any) {
+      } catch (error) {
+        const errorMsg = getErrorMessage(error);
         logger.error("Failed to delete auto-mod rule", {
-          error: error.message,
+          error: errorMsg,
           guildId,
           ruleId,
         });
@@ -707,12 +713,12 @@ export function registerAutoModerationTools(
           content: [
             {
               type: "text" as const,
-              text: `Error: ${error.message}`,
+              text: `Error: ${errorMsg}`,
             },
           ],
           structuredContent: {
             success: false,
-            error: error.message,
+            error: errorMsg,
           },
         };
       }

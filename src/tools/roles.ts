@@ -1,15 +1,13 @@
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { DiscordClientManager } from "../discord/client.js";
-import { Logger } from "../utils/logger.js";
-import { z } from "zod";
-import {
-  PermissionDeniedError,
-  GuildNotFoundError,
-} from "../errors/discord.js";
 import { PermissionFlagsBits, PermissionsBitField } from "discord.js";
+import { z } from "zod";
+import type { DiscordClientManager } from "../discord/client.js";
+import { GuildNotFoundError, PermissionDeniedError } from "../errors/discord.js";
+import type { ToolRegistrationTarget } from "../registry/tool-adapter.js";
+import { getErrorMessage } from "../utils/errors.js";
+import type { Logger } from "../utils/logger.js";
 
 export function registerRoleTools(
-  server: McpServer,
+  server: ToolRegistrationTarget,
   discordManager: DiscordClientManager,
   logger: Logger,
 ) {
@@ -29,24 +27,13 @@ export function registerRoleTools(
           .max(0xffffff)
           .optional()
           .describe("Role color as hex integer (e.g., 0x00ff00 for green)"),
-        hoist: z
-          .boolean()
-          .optional()
-          .describe("Display role members separately in sidebar"),
-        mentionable: z
-          .boolean()
-          .optional()
-          .describe("Allow anyone to @mention this role"),
+        hoist: z.boolean().optional().describe("Display role members separately in sidebar"),
+        mentionable: z.boolean().optional().describe("Allow anyone to @mention this role"),
         permissions: z
           .array(z.string())
           .optional()
-          .describe(
-            'Array of permission names (e.g., ["SendMessages", "ManageMessages"])',
-          ),
-        reason: z
-          .string()
-          .optional()
-          .describe("Reason for role creation (shown in audit log)"),
+          .describe('Array of permission names (e.g., ["SendMessages", "ManageMessages"])'),
+        reason: z.string().optional().describe("Reason for role creation (shown in audit log)"),
       },
       outputSchema: {
         success: z.boolean(),
@@ -62,15 +49,7 @@ export function registerRoleTools(
         error: z.string().optional(),
       },
     },
-    async ({
-      guildId,
-      name,
-      color,
-      hoist,
-      mentionable,
-      permissions,
-      reason,
-    }) => {
+    async ({ guildId, name, color, hoist, mentionable, permissions, reason }) => {
       try {
         const client = discordManager.getClient();
 
@@ -88,8 +67,9 @@ export function registerRoleTools(
         // Build permissions bitfield
         let permissionsBitField: bigint | undefined;
         if (permissions && permissions.length > 0) {
-          permissionsBitField = new PermissionsBitField(permissions as any)
-            .bitfield;
+          permissionsBitField = new PermissionsBitField(
+            permissions as (keyof typeof PermissionFlagsBits)[],
+          ).bitfield;
         }
 
         // Create role
@@ -126,23 +106,24 @@ export function registerRoleTools(
           ],
           structuredContent: output,
         };
-      } catch (error: any) {
+      } catch (error) {
+        const errorMsg = getErrorMessage(error);
         logger.error("Failed to create role", {
-          error: error.message,
+          error: errorMsg,
           guildId,
           name,
         });
 
         const output = {
           success: false,
-          error: error.message,
+          error: errorMsg,
         };
 
         return {
           content: [
             {
               type: "text" as const,
-              text: `Failed to create role: ${error.message}`,
+              text: `Failed to create role: ${errorMsg}`,
             },
           ],
           structuredContent: output,
@@ -161,10 +142,7 @@ export function registerRoleTools(
       inputSchema: {
         guildId: z.string().describe("Server/Guild ID"),
         roleId: z.string().describe("Role ID to delete"),
-        reason: z
-          .string()
-          .optional()
-          .describe("Reason for role deletion (shown in audit log)"),
+        reason: z.string().optional().describe("Reason for role deletion (shown in audit log)"),
       },
       outputSchema: {
         success: z.boolean(),
@@ -226,23 +204,24 @@ export function registerRoleTools(
           ],
           structuredContent: output,
         };
-      } catch (error: any) {
+      } catch (error) {
+        const errorMsg = getErrorMessage(error);
         logger.error("Failed to delete role", {
-          error: error.message,
+          error: errorMsg,
           guildId,
           roleId,
         });
 
         const output = {
           success: false,
-          error: error.message,
+          error: errorMsg,
         };
 
         return {
           content: [
             {
               type: "text" as const,
-              text: `Failed to delete role: ${error.message}`,
+              text: `Failed to delete role: ${errorMsg}`,
             },
           ],
           structuredContent: output,
@@ -257,8 +236,7 @@ export function registerRoleTools(
     "modify_role",
     {
       title: "Modify Server Role",
-      description:
-        "Update a role's name, color, permissions, or other settings",
+      description: "Update a role's name, color, permissions, or other settings",
       inputSchema: {
         guildId: z.string().describe("Server/Guild ID"),
         roleId: z.string().describe("Role ID to modify"),
@@ -270,24 +248,13 @@ export function registerRoleTools(
           .max(0xffffff)
           .optional()
           .describe("New role color as hex integer"),
-        hoist: z
-          .boolean()
-          .optional()
-          .describe("Display role members separately in sidebar"),
-        mentionable: z
-          .boolean()
-          .optional()
-          .describe("Allow anyone to @mention this role"),
+        hoist: z.boolean().optional().describe("Display role members separately in sidebar"),
+        mentionable: z.boolean().optional().describe("Allow anyone to @mention this role"),
         permissions: z
           .array(z.string())
           .optional()
-          .describe(
-            "Array of permission names to set (replaces all permissions)",
-          ),
-        reason: z
-          .string()
-          .optional()
-          .describe("Reason for modification (shown in audit log)"),
+          .describe("Array of permission names to set (replaces all permissions)"),
+        reason: z.string().optional().describe("Reason for modification (shown in audit log)"),
       },
       outputSchema: {
         success: z.boolean(),
@@ -302,107 +269,54 @@ export function registerRoleTools(
         error: z.string().optional(),
       },
     },
-    async ({
-      guildId,
-      roleId,
-      name,
-      color,
-      hoist,
-      mentionable,
-      permissions,
-      reason,
-    }) => {
+    async ({ guildId, roleId, name, color, hoist, mentionable, permissions, reason }) => {
       try {
         const client = discordManager.getClient();
-
         const guild = await client.guilds.fetch(guildId).catch(() => null);
-        if (!guild) {
-          throw new GuildNotFoundError(guildId);
-        }
+        if (!guild) throw new GuildNotFoundError(guildId);
 
-        // Check bot permissions
-        const botMember = await guild.members.fetchMe();
-        if (!botMember.permissions.has(PermissionFlagsBits.ManageRoles)) {
-          throw new PermissionDeniedError("ManageRoles", guildId);
-        }
-
-        // Fetch role
         const role = await guild.roles.fetch(roleId).catch(() => null);
-        if (!role) {
-          throw new Error(`Role ${roleId} not found in server`);
-        }
+        if (!role) throw new Error(`Role ${roleId} not found in server`);
+        if (role.id === guild.id && name) throw new Error("Cannot rename @everyone role");
 
-        // Check if it's @everyone and trying to change name
-        if (role.id === guild.id && name) {
-          throw new Error("Cannot rename @everyone role");
-        }
+        // Build update options using spread
+        const updateOptions = {
+          ...(name !== undefined && { name }),
+          ...(color !== undefined && { color }),
+          ...(hoist !== undefined && { hoist }),
+          ...(mentionable !== undefined && { mentionable }),
+          ...(permissions !== undefined && {
+            permissions: new PermissionsBitField(
+              permissions as (keyof typeof PermissionFlagsBits)[],
+            ).bitfield,
+          }),
+          ...(reason !== undefined && { reason }),
+        };
 
-        // Check role hierarchy
-        if (role.position >= botMember.roles.highest.position) {
-          throw new Error(
-            "Cannot modify this role - it is equal to or higher than the bot's highest role",
-          );
-        }
-
-        // Build update options
-        const updateOptions: any = {};
-        if (name !== undefined) updateOptions.name = name;
-        if (color !== undefined) updateOptions.color = color;
-        if (hoist !== undefined) updateOptions.hoist = hoist;
-        if (mentionable !== undefined) updateOptions.mentionable = mentionable;
-        if (permissions !== undefined) {
-          updateOptions.permissions = new PermissionsBitField(
-            permissions as any,
-          ).bitfield;
-        }
-        if (reason !== undefined) updateOptions.reason = reason;
-
-        // Update role
         const updatedRole = await role.edit(updateOptions);
-
-        const roleData = {
-          id: updatedRole.id,
-          name: updatedRole.name,
-          color: updatedRole.color,
-          permissions: updatedRole.permissions.toArray(),
-        };
-
-        const output = {
-          success: true,
-          role: roleData,
-        };
-
         logger.info("Role modified", { guildId, roleId, reason });
 
         return {
           content: [
-            {
-              type: "text" as const,
-              text: `Successfully modified role "${updatedRole.name}"`,
-            },
+            { type: "text" as const, text: `Successfully modified role "${updatedRole.name}"` },
           ],
-          structuredContent: output,
+          structuredContent: {
+            success: true,
+            role: {
+              id: updatedRole.id,
+              name: updatedRole.name,
+              color: updatedRole.color,
+              permissions: updatedRole.permissions.toArray(),
+            },
+          },
         };
-      } catch (error: any) {
-        logger.error("Failed to modify role", {
-          error: error.message,
-          guildId,
-          roleId,
-        });
-
-        const output = {
-          success: false,
-          error: error.message,
-        };
+      } catch (error) {
+        const errorMsg = getErrorMessage(error);
+        logger.error("Failed to modify role", { error: errorMsg, guildId, roleId });
 
         return {
-          content: [
-            {
-              type: "text" as const,
-              text: `Failed to modify role: ${error.message}`,
-            },
-          ],
-          structuredContent: output,
+          content: [{ type: "text" as const, text: `Failed to modify role: ${errorMsg}` }],
+          structuredContent: { success: false, error: errorMsg },
           isError: true,
         };
       }
@@ -494,22 +408,23 @@ export function registerRoleTools(
           ],
           structuredContent: output,
         };
-      } catch (error: any) {
+      } catch (error) {
+        const errorMsg = getErrorMessage(error);
         logger.error("Failed to list roles", {
-          error: error.message,
+          error: errorMsg,
           guildId,
         });
 
         const output = {
           success: false,
-          error: error.message,
+          error: errorMsg,
         };
 
         return {
           content: [
             {
               type: "text" as const,
-              text: `Failed to list roles: ${error.message}`,
+              text: `Failed to list roles: ${errorMsg}`,
             },
           ],
           structuredContent: output,
@@ -592,23 +507,24 @@ export function registerRoleTools(
           ],
           structuredContent: output,
         };
-      } catch (error: any) {
+      } catch (error) {
+        const errorMsg = getErrorMessage(error);
         logger.error("Failed to get role info", {
-          error: error.message,
+          error: errorMsg,
           guildId,
           roleId,
         });
 
         const output = {
           success: false,
-          error: error.message,
+          error: errorMsg,
         };
 
         return {
           content: [
             {
               type: "text" as const,
-              text: `Failed to get role info: ${error.message}`,
+              text: `Failed to get role info: ${errorMsg}`,
             },
           ],
           structuredContent: output,
