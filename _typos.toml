@@ -1,0 +1,10 @@
+[default.extend-identifiers]
+# HashiCorp is correct spelling (typos thinks it should be HashCorp)
+HashiCorp = "HashiCorp"
+
+[default.extend-words]
+# Azure Kubernetes Service
+AKS = "AKS"
+
+[files]
+extend-exclude = ["package-lock.json", "node_modules/", "dist/"]

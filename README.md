@@ -1,74 +1,79 @@
-# Discord Agent MCP
+# Efficient Discord Agent MCP
 
-[![Documentation](https://img.shields.io/badge/docs-GitHub%20Pages-blue)](https://aj-geddes.github.io/discord-agent-mcp/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Node.js](https://img.shields.io/badge/node-%3E%3D20.0.0-brightgreen)](https://nodejs.org/)
 [![MCP](https://img.shields.io/badge/MCP-Compatible-purple)](https://modelcontextprotocol.io/)
 
-**AI-Powered Discord Server Management** - A production-ready Model Context Protocol (MCP) server with 71 tools for comprehensive Discord automation through Claude AI.
+**Token-Efficient Discord Server Management** - A fork of discord-agent-mcp that uses **progressive disclosure** to dramatically reduce token consumption.
+
+## Why This Fork?
+
+The original discord-agent-mcp exposes **71 individual tools** to the LLM. Each tool definition consumes tokens when loaded. This fork reduces that to **5 meta-tools** that allow the LLM to discover and execute Discord operations on-demand.
+
+### Token Savings
+
+| Approach | Tools Exposed | Approximate Token Cost |
+|----------|---------------|------------------------|
+| Original | 71 tools | ~15,000+ tokens |
+| This Fork | 5 meta-tools | ~1,500 tokens |
+
+**~90% reduction in tool definition tokens!**
 
 ---
 
-## Documentation
+## How It Works
 
-**[View Full Documentation →](https://aj-geddes.github.io/discord-agent-mcp/)**
+Instead of exposing 71 individual tools, this server exposes **5 meta-tools**:
 
-- [Getting Started Guide](https://aj-geddes.github.io/discord-agent-mcp/getting-started/)
-- [71 Tools Reference](https://aj-geddes.github.io/discord-agent-mcp/tools/)
-- [Interactive Prompts](https://aj-geddes.github.io/discord-agent-mcp/prompts/)
-- [Deployment Guide](https://aj-geddes.github.io/discord-agent-mcp/deployment/)
-- [API Reference](https://aj-geddes.github.io/discord-agent-mcp/api/)
-- [Troubleshooting](https://aj-geddes.github.io/discord-agent-mcp/troubleshooting/)
+| Meta-Tool | Purpose |
+|-----------|---------|
+| `list_categories` | Discover available tool categories (messaging, moderation, etc.) |
+| `list_tools` | List tools in a specific category |
+| `search_tools` | Search for tools by keyword |
+| `get_tool_schema` | Get full parameter schema for a tool |
+| `execute_tool` | Execute any Discord tool by name |
+
+### Example Workflow
+
+```
+1. LLM calls list_categories() → sees "moderation" category
+2. LLM calls list_tools("moderation") → sees "ban_member", "kick_member", etc.
+3. LLM calls get_tool_schema("ban_member") → sees required params: userId, guildId, reason
+4. LLM calls execute_tool("ban_member", {userId: "123", guildId: "456", reason: "spam"})
+```
+
+The LLM only loads the schema for tools it actually needs, saving thousands of tokens.
 
 ---
 
-## What Is This?
+## Available Operations
 
-Discord Agent MCP bridges Claude AI with Discord, letting you manage your server through natural language. Instead of clicking through Discord's interface or writing code, just tell Claude what you want:
+All 71 original Discord operations are still available, organized by category:
 
-```
-"Create a gaming community server with voice channels for different games,
-a welcome channel, and moderator roles"
-```
-
-Claude handles the rest using the 71 Discord management tools provided by this MCP server.
+| Category | Operations | Description |
+|----------|------------|-------------|
+| messaging | 10 | Send, edit, delete, react, pin messages |
+| channels | 10 | Create, modify, delete channels and permissions |
+| members | 3 | Info, listings, nicknames |
+| roles | 7 | Create, assign, modify roles |
+| server | 7 | Settings, webhooks, invites, audit logs |
+| moderation | 6 | Kick, ban, timeout, manage bans |
+| emojis | 4 | Custom emoji management |
+| stickers | 4 | Custom sticker management |
+| scheduled-events | 6 | Scheduled events |
+| automod | 5 | Automatic moderation rules |
+| application-commands | 6 | Slash command management |
 
 ---
 
 ## Features
 
-### 71 Discord Tools
-
-| Category | Tools | Description |
-|----------|-------|-------------|
-| Messaging | 10 | Send, edit, delete, react, pin messages |
-| Channels | 10 | Create, modify, delete channels and permissions |
-| Threads | 3 | Create and manage forum threads |
-| Server | 7 | Settings, webhooks, invites, audit logs |
-| Members | 3 | Info, listings, nicknames |
-| Roles | 7 | Create, assign, modify roles |
-| Moderation | 6 | Kick, ban, timeout, manage bans |
-| Emojis | 4 | Custom emoji management |
-| Stickers | 4 | Custom sticker management |
-| Events | 6 | Scheduled events |
-| Auto-Mod | 5 | Automatic moderation rules |
-| Commands | 6 | Slash command management |
-
-### Production Ready
-
+- **Token Efficient**: Progressive disclosure pattern reduces token usage by ~90%
 - **Persistent Connection**: Robust Discord.js client with automatic reconnection
 - **Type Safe**: Full TypeScript with Zod validation
 - **Comprehensive Errors**: Detailed error messages with resolution guidance
 - **Structured Logging**: JSON logging with configurable levels
 - **Flexible Deployment**: Local, Docker, or Kubernetes
-
-### Claude Code Integration
-
-First-class support for Anthropic's Claude Code CLI:
-
-```bash
-claude mcp add --transport http discord-agent http://localhost:3000/mcp
-```
 
 ---
 

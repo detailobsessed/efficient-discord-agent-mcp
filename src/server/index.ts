@@ -1,3 +1,10 @@
+import { config } from "dotenv";
+import { fileURLToPath } from "url";
+import { dirname, join } from "path";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+config({ path: join(__dirname, "../../.env") });
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
@@ -21,6 +28,11 @@ import { registerEventPrompts } from "../prompts/events.js";
 import { registerPermissionPrompts } from "../prompts/permissions.js";
 import { Logger } from "../utils/logger.js";
 import { loadConfig } from "./config.js";
+import {
+  ToolRegistry,
+  createRegistryAdapter,
+  registerMetaTools,
+} from "../registry/index.js";
 
 async function main() {
   const config = loadConfig();
@@ -56,19 +68,73 @@ async function main() {
     version: config.serverVersion,
   });
 
-  // Register tools
-  logger.info("Registering tools...");
-  registerMessagingTools(mcpServer, discordManager, logger);
-  registerChannelTools(mcpServer, discordManager, logger);
-  registerMemberTools(mcpServer, discordManager, logger);
-  registerRoleTools(mcpServer, discordManager, logger);
-  registerServerTools(mcpServer, discordManager, logger);
-  registerModerationTools(mcpServer, discordManager, logger);
-  registerEmojiTools(mcpServer, discordManager, logger);
-  registerStickerTools(mcpServer, discordManager, logger);
-  registerScheduledEventTools(mcpServer, discordManager, logger);
-  registerAutoModerationTools(mcpServer, discordManager, logger);
-  registerApplicationCommandTools(mcpServer, discordManager, logger);
+  // Create tool registry for progressive disclosure
+  // Instead of exposing 65+ tools directly (massive token cost),
+  // we expose 5 meta-tools that allow the LLM to discover and execute tools on-demand
+  const registry = new ToolRegistry();
+
+  // Register all tools with the registry (not directly with MCP server)
+  logger.info("Registering tools with registry...");
+  registerMessagingTools(
+    createRegistryAdapter(registry, "messaging") as any,
+    discordManager,
+    logger,
+  );
+  registerChannelTools(
+    createRegistryAdapter(registry, "channels") as any,
+    discordManager,
+    logger,
+  );
+  registerMemberTools(
+    createRegistryAdapter(registry, "members") as any,
+    discordManager,
+    logger,
+  );
+  registerRoleTools(
+    createRegistryAdapter(registry, "roles") as any,
+    discordManager,
+    logger,
+  );
+  registerServerTools(
+    createRegistryAdapter(registry, "server") as any,
+    discordManager,
+    logger,
+  );
+  registerModerationTools(
+    createRegistryAdapter(registry, "moderation") as any,
+    discordManager,
+    logger,
+  );
+  registerEmojiTools(
+    createRegistryAdapter(registry, "emojis") as any,
+    discordManager,
+    logger,
+  );
+  registerStickerTools(
+    createRegistryAdapter(registry, "stickers") as any,
+    discordManager,
+    logger,
+  );
+  registerScheduledEventTools(
+    createRegistryAdapter(registry, "scheduled-events") as any,
+    discordManager,
+    logger,
+  );
+  registerAutoModerationTools(
+    createRegistryAdapter(registry, "automod") as any,
+    discordManager,
+    logger,
+  );
+  registerApplicationCommandTools(
+    createRegistryAdapter(registry, "application-commands") as any,
+    discordManager,
+    logger,
+  );
+
+  // Register the 5 meta-tools with the MCP server
+  // These are the ONLY tools exposed to the LLM
+  logger.info("Registering meta-tools for progressive disclosure...");
+  registerMetaTools(mcpServer, registry, logger);
 
   // Register resources
   logger.info("Registering resources...");

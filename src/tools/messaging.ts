@@ -8,7 +8,7 @@ import {
   MessageNotFoundError,
 } from "../errors/discord.js";
 import { embedSchema, messageSchema } from "../types/schemas.js";
-import { PermissionFlagsBits } from "discord.js";
+import { PermissionFlagsBits, Message } from "discord.js";
 
 export function registerMessagingTools(
   server: McpServer,
@@ -1049,6 +1049,360 @@ export function registerMessagingTools(
             },
           ],
           structuredContent: output,
+          isError: true,
+        };
+      }
+    },
+  );
+
+  // Get Message Tool
+  server.registerTool(
+    "get_message",
+    {
+      title: "Get Message",
+      description: "Get a specific message by ID from a channel",
+      inputSchema: {
+        channelId: z.string().describe("Channel ID"),
+        messageId: z.string().describe("Message ID to retrieve"),
+      },
+      outputSchema: {
+        success: z.boolean(),
+        message: z
+          .object({
+            id: z.string(),
+            content: z.string(),
+            authorId: z.string(),
+            authorUsername: z.string(),
+            authorBot: z.boolean(),
+            timestamp: z.string(),
+            editedTimestamp: z.string().nullable(),
+            attachments: z.array(
+              z.object({
+                id: z.string(),
+                filename: z.string(),
+                url: z.string(),
+                size: z.number(),
+              }),
+            ),
+            embeds: z.number(),
+            reactions: z.array(
+              z.object({
+                emoji: z.string(),
+                count: z.number(),
+              }),
+            ),
+            replyTo: z.string().nullable(),
+            pinned: z.boolean(),
+          })
+          .optional(),
+        error: z.string().optional(),
+      },
+    },
+    async ({ channelId, messageId }) => {
+      try {
+        const client = discordManager.getClient();
+
+        const channel = await client.channels
+          .fetch(channelId)
+          .catch(() => null);
+        if (!channel || !channel.isTextBased()) {
+          throw new ChannelNotFoundError(channelId);
+        }
+
+        if (!("messages" in channel)) {
+          throw new ChannelNotFoundError(channelId);
+        }
+
+        const message = await channel.messages
+          .fetch(messageId)
+          .catch(() => null);
+        if (!message) {
+          throw new MessageNotFoundError(messageId);
+        }
+
+        const messageData = {
+          id: message.id,
+          content: message.content,
+          authorId: message.author.id,
+          authorUsername: message.author.username,
+          authorBot: message.author.bot,
+          timestamp: message.createdAt.toISOString(),
+          editedTimestamp: message.editedAt?.toISOString() || null,
+          attachments: message.attachments.map((a) => ({
+            id: a.id,
+            filename: a.name,
+            url: a.url,
+            size: a.size,
+          })),
+          embeds: message.embeds.length,
+          reactions: message.reactions.cache.map((r) => ({
+            emoji: r.emoji.toString(),
+            count: r.count || 0,
+          })),
+          replyTo: message.reference?.messageId || null,
+          pinned: message.pinned,
+        };
+
+        const output = {
+          success: true,
+          message: messageData,
+        };
+
+        logger.info("Message retrieved", { channelId, messageId });
+
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `**${message.author.username}**: ${message.content.substring(0, 200)}${message.content.length > 200 ? "..." : ""}`,
+            },
+          ],
+          structuredContent: output,
+        };
+      } catch (error: any) {
+        logger.error("Failed to get message", {
+          error: error.message,
+          channelId,
+          messageId,
+        });
+
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `Failed to get message: ${error.message}`,
+            },
+          ],
+          structuredContent: { success: false, error: error.message },
+          isError: true,
+        };
+      }
+    },
+  );
+
+  // Reply to Message Tool
+  server.registerTool(
+    "reply_to_message",
+    {
+      title: "Reply to Message",
+      description: "Reply to a specific message, creating a thread reference",
+      inputSchema: {
+        channelId: z.string().describe("Channel ID"),
+        messageId: z.string().describe("Message ID to reply to"),
+        content: z.string().max(2000).describe("Reply content"),
+        mention: z
+          .boolean()
+          .optional()
+          .default(true)
+          .describe("Whether to mention the original author"),
+      },
+      outputSchema: {
+        success: z.boolean(),
+        messageId: z.string().optional(),
+        replyToId: z.string().optional(),
+        error: z.string().optional(),
+      },
+    },
+    async ({ channelId, messageId, content, mention = true }) => {
+      try {
+        const client = discordManager.getClient();
+
+        const channel = await client.channels
+          .fetch(channelId)
+          .catch(() => null);
+        if (!channel || !channel.isTextBased()) {
+          throw new ChannelNotFoundError(channelId);
+        }
+
+        if (!("messages" in channel) || !("send" in channel)) {
+          throw new ChannelNotFoundError(channelId);
+        }
+
+        const originalMessage = await channel.messages
+          .fetch(messageId)
+          .catch(() => null);
+        if (!originalMessage) {
+          throw new MessageNotFoundError(messageId);
+        }
+
+        // Check permissions
+        if ("guild" in channel && channel.guild) {
+          const permissions = channel.permissionsFor(client.user!);
+          if (!permissions?.has(PermissionFlagsBits.SendMessages)) {
+            throw new PermissionDeniedError("SendMessages", channelId);
+          }
+        }
+
+        const reply = await originalMessage.reply({
+          content,
+          allowedMentions: { repliedUser: mention },
+        });
+
+        const output = {
+          success: true,
+          messageId: reply.id,
+          replyToId: messageId,
+        };
+
+        logger.info("Reply sent", {
+          channelId,
+          messageId: reply.id,
+          replyToId: messageId,
+        });
+
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `Replied to message ${messageId} successfully`,
+            },
+          ],
+          structuredContent: output,
+        };
+      } catch (error: any) {
+        logger.error("Failed to reply to message", {
+          error: error.message,
+          channelId,
+          messageId,
+        });
+
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `Failed to reply: ${error.message}`,
+            },
+          ],
+          structuredContent: { success: false, error: error.message },
+          isError: true,
+        };
+      }
+    },
+  );
+
+  // Search Messages Tool
+  server.registerTool(
+    "search_messages",
+    {
+      title: "Search Messages",
+      description:
+        "Search for messages in a channel by content, author, or other criteria",
+      inputSchema: {
+        channelId: z.string().describe("Channel ID to search in"),
+        query: z.string().optional().describe("Text to search for in message content"),
+        authorId: z.string().optional().describe("Filter by author ID"),
+        limit: z
+          .number()
+          .int()
+          .min(1)
+          .max(100)
+          .optional()
+          .default(25)
+          .describe("Number of messages to search through (max 100)"),
+        before: z.string().optional().describe("Search before this message ID"),
+        after: z.string().optional().describe("Search after this message ID"),
+      },
+      outputSchema: {
+        success: z.boolean(),
+        messages: z
+          .array(
+            z.object({
+              id: z.string(),
+              content: z.string(),
+              authorId: z.string(),
+              authorUsername: z.string(),
+              timestamp: z.string(),
+            }),
+          )
+          .optional(),
+        totalFound: z.number().optional(),
+        error: z.string().optional(),
+      },
+    },
+    async ({ channelId, query, authorId, limit = 25, before, after }) => {
+      try {
+        const client = discordManager.getClient();
+
+        const channel = await client.channels
+          .fetch(channelId)
+          .catch(() => null);
+        if (!channel || !channel.isTextBased()) {
+          throw new ChannelNotFoundError(channelId);
+        }
+
+        if (!("messages" in channel)) {
+          throw new ChannelNotFoundError(channelId);
+        }
+
+        // Fetch messages
+        const fetchOptions: any = { limit };
+        if (before) fetchOptions.before = before;
+        if (after) fetchOptions.after = after;
+
+        const messagesResult = await channel.messages.fetch(fetchOptions);
+
+        // Handle both single message and collection returns
+        const messagesArray: Message[] = messagesResult instanceof Map
+          ? Array.from(messagesResult.values())
+          : [messagesResult];
+
+        // Filter messages
+        let filtered = messagesArray;
+
+        if (query) {
+          const lowerQuery = query.toLowerCase();
+          filtered = filtered.filter((m) =>
+            m.content.toLowerCase().includes(lowerQuery),
+          );
+        }
+
+        if (authorId) {
+          filtered = filtered.filter((m) => m.author.id === authorId);
+        }
+
+        const results = filtered.map((m) => ({
+          id: m.id,
+          content: m.content.substring(0, 500),
+          authorId: m.author.id,
+          authorUsername: m.author.username,
+          timestamp: m.createdAt.toISOString(),
+        }));
+
+        const output = {
+          success: true,
+          messages: results,
+          totalFound: results.length,
+        };
+
+        logger.info("Messages searched", {
+          channelId,
+          query,
+          found: results.length,
+        });
+
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `Found ${results.length} message(s)${query ? ` matching "${query}"` : ""}`,
+            },
+          ],
+          structuredContent: output,
+        };
+      } catch (error: any) {
+        logger.error("Failed to search messages", {
+          error: error.message,
+          channelId,
+        });
+
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `Failed to search messages: ${error.message}`,
+            },
+          ],
+          structuredContent: { success: false, error: error.message },
           isError: true,
         };
       }

@@ -13,6 +13,179 @@ export function registerServerTools(
   discordManager: DiscordClientManager,
   logger: Logger,
 ) {
+  // List Guilds Tool
+  server.registerTool(
+    "list_guilds",
+    {
+      title: "List Bot Guilds",
+      description: "List all Discord servers (guilds) the bot is a member of",
+      inputSchema: {},
+      outputSchema: {
+        success: z.boolean(),
+        guilds: z
+          .array(
+            z.object({
+              id: z.string(),
+              name: z.string(),
+              memberCount: z.number(),
+              ownerId: z.string(),
+              icon: z.string().nullable(),
+            }),
+          )
+          .optional(),
+        totalCount: z.number().optional(),
+        error: z.string().optional(),
+      },
+    },
+    async () => {
+      try {
+        const client = discordManager.getClient();
+        const guilds = client.guilds.cache;
+
+        const guildList = guilds.map((guild) => ({
+          id: guild.id,
+          name: guild.name,
+          memberCount: guild.memberCount,
+          ownerId: guild.ownerId,
+          icon: guild.iconURL(),
+        }));
+
+        const output = {
+          success: true,
+          guilds: guildList,
+          totalCount: guildList.length,
+        };
+
+        logger.info("Guilds listed", { count: guildList.length });
+
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `Bot is in ${guildList.length} server(s): ${guildList.map((g) => g.name).join(", ")}`,
+            },
+          ],
+          structuredContent: output,
+        };
+      } catch (error: any) {
+        logger.error("Failed to list guilds", { error: error.message });
+
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `Failed to list guilds: ${error.message}`,
+            },
+          ],
+          structuredContent: { success: false, error: error.message },
+          isError: true,
+        };
+      }
+    },
+  );
+
+  // Get Server Info Tool
+  server.registerTool(
+    "get_server_info",
+    {
+      title: "Get Server Info",
+      description:
+        "Get detailed information about a Discord server including name, member count, channels, roles, and more",
+      inputSchema: {
+        guildId: z.string().describe("Guild ID"),
+      },
+      outputSchema: {
+        success: z.boolean(),
+        server: z
+          .object({
+            id: z.string(),
+            name: z.string(),
+            description: z.string().nullable(),
+            memberCount: z.number(),
+            ownerId: z.string(),
+            ownerUsername: z.string().optional(),
+            icon: z.string().nullable(),
+            banner: z.string().nullable(),
+            createdAt: z.string(),
+            channelCount: z.number(),
+            roleCount: z.number(),
+            emojiCount: z.number(),
+            boostLevel: z.number(),
+            boostCount: z.number(),
+            verificationLevel: z.string(),
+            features: z.array(z.string()),
+          })
+          .optional(),
+        error: z.string().optional(),
+      },
+    },
+    async ({ guildId }) => {
+      try {
+        const client = discordManager.getClient();
+
+        const guild = await client.guilds.fetch(guildId).catch(() => null);
+        if (!guild) {
+          throw new GuildNotFoundError(guildId);
+        }
+
+        // Fetch additional data
+        const owner = await guild.fetchOwner().catch(() => null);
+
+        const serverInfo = {
+          id: guild.id,
+          name: guild.name,
+          description: guild.description,
+          memberCount: guild.memberCount,
+          ownerId: guild.ownerId,
+          ownerUsername: owner?.user.username,
+          icon: guild.iconURL(),
+          banner: guild.bannerURL(),
+          createdAt: guild.createdAt.toISOString(),
+          channelCount: guild.channels.cache.size,
+          roleCount: guild.roles.cache.size,
+          emojiCount: guild.emojis.cache.size,
+          boostLevel: guild.premiumTier,
+          boostCount: guild.premiumSubscriptionCount || 0,
+          verificationLevel: guild.verificationLevel.toString(),
+          features: [...guild.features],
+        };
+
+        const output = {
+          success: true,
+          server: serverInfo,
+        };
+
+        logger.info("Server info retrieved", { guildId, name: guild.name });
+
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `**${guild.name}**\nMembers: ${guild.memberCount} | Channels: ${serverInfo.channelCount} | Roles: ${serverInfo.roleCount}`,
+            },
+          ],
+          structuredContent: output,
+        };
+      } catch (error: any) {
+        logger.error("Failed to get server info", {
+          error: error.message,
+          guildId,
+        });
+
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `Failed to get server info: ${error.message}`,
+            },
+          ],
+          structuredContent: { success: false, error: error.message },
+          isError: true,
+        };
+      }
+    },
+  );
+
   // Modify Server Tool
   server.registerTool(
     "modify_server",
