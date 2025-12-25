@@ -21,6 +21,7 @@ export interface ToolInfo {
 export interface ToolSummary {
   name: string;
   description: string;
+  category?: string;
 }
 
 export interface CategoryInfo {
@@ -195,7 +196,7 @@ export class ToolRegistry {
       if (score > 0) {
         results.push({
           score,
-          tool: { name, description: info.description },
+          tool: { name, description: info.description, category: info.category },
         });
       }
     }
@@ -271,7 +272,7 @@ export class ToolRegistry {
   private handleZodArray(def: ZodDef): Record<string, unknown> {
     const schema: Record<string, unknown> = {
       type: "array",
-      items: def.type ? this.zodToJsonSchema(def.type) : { type: "unknown" },
+      items: def.element ? this.zodToJsonSchema(def.element) : { type: "unknown" },
     };
     if (def.maxLength) schema.maxItems = def.maxLength.value;
     if (def.minLength) schema.minItems = def.minLength.value;
@@ -292,7 +293,7 @@ export class ToolRegistry {
     const def = (zodType as unknown as { _def: ZodDef })._def;
     if (!def) return { type: "unknown" };
 
-    const { typeName, description } = def;
+    const { type: typeName, description } = def;
     let schema: Record<string, unknown>;
 
     switch (typeName) {
@@ -310,7 +311,7 @@ export class ToolRegistry {
         schema = this.handleZodArray(def);
         break;
       case "ZodObject":
-        schema = { type: "object", properties: def.shape ? this.serializeSchema(def.shape()) : {} };
+        schema = { type: "object", properties: def.shape ? this.serializeSchema(def.shape) : {} };
         break;
       case "ZodOptional":
         schema = this.handleZodWrapper(def, { optional: true });
@@ -331,8 +332,12 @@ export class ToolRegistry {
       case "ZodNullable":
         schema = this.handleZodWrapper(def, { nullable: true });
         break;
-      default:
-        schema = { type: typeName.replace("Zod", "").toLowerCase() };
+      default: {
+        // Handle unknown types - use the type name if available
+        const typeStr =
+          typeof typeName === "string" ? typeName.replace("Zod", "").toLowerCase() : "unknown";
+        schema = { type: typeStr };
+      }
     }
 
     if (description) schema.description = description;
@@ -340,15 +345,15 @@ export class ToolRegistry {
   }
 }
 
-/** Zod internal definition type */
+/** Zod v4 internal definition type */
 interface ZodDef {
-  typeName: string;
+  type?: string;
   description?: string;
   checks?: Array<{ kind: string; value?: unknown }>;
   values?: unknown[];
   innerType?: ZodType;
-  shape?: () => Record<string, ZodType>;
-  type?: ZodType;
+  element?: ZodType;
+  shape?: Record<string, ZodType>;
   defaultValue?: () => unknown;
   options?: ZodType[];
   minLength?: { value: number };

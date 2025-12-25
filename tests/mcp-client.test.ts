@@ -388,7 +388,7 @@ describe("MCP Client Integration", () => {
     it("should return schema for valid tool", async () => {
       const result = (await client.callTool({
         name: "get_tool_schema",
-        arguments: { toolName: "send_message" },
+        arguments: { tool_name: "send_message" },
       })) as ToolResult;
 
       const textContent = result.content.find((c) => c.type === "text");
@@ -401,7 +401,7 @@ describe("MCP Client Integration", () => {
     it("should return error for invalid tool", async () => {
       const result = (await client.callTool({
         name: "get_tool_schema",
-        arguments: { toolName: "nonexistent" },
+        arguments: { tool_name: "nonexistent" },
       })) as ToolResult;
 
       expect(result.isError).toBe(true);
@@ -413,8 +413,8 @@ describe("MCP Client Integration", () => {
       const result = (await client.callTool({
         name: "execute_tool",
         arguments: {
-          toolName: "send_message",
-          params: {
+          tool_name: "send_message",
+          arguments: {
             channelId: "123456789",
             content: "Hello, World!",
           },
@@ -430,8 +430,8 @@ describe("MCP Client Integration", () => {
       const result = (await client.callTool({
         name: "execute_tool",
         arguments: {
-          toolName: "nonexistent",
-          params: {},
+          tool_name: "nonexistent",
+          arguments: {},
         },
       })) as ToolResult;
 
@@ -479,7 +479,7 @@ describe("Progressive Disclosure Workflow", () => {
     // Step 3: Get schema for a specific tool
     const schemaResult = await client.callTool({
       name: "get_tool_schema",
-      arguments: { toolName: "send_message" },
+      arguments: { tool_name: "send_message" },
     });
     expect(schemaResult.content).toBeDefined();
 
@@ -487,8 +487,8 @@ describe("Progressive Disclosure Workflow", () => {
     const executeResult = (await client.callTool({
       name: "execute_tool",
       arguments: {
-        toolName: "send_message",
-        params: {
+        tool_name: "send_message",
+        arguments: {
           channelId: "test-channel",
           content: "Test message",
         },
@@ -526,7 +526,7 @@ describe("New Tools Tests", () => {
     it("should list guilds", async () => {
       const result = (await client.callTool({
         name: "execute_tool",
-        arguments: { toolName: "list_guilds", params: {} },
+        arguments: { tool_name: "list_guilds", arguments: {} },
       })) as ToolResult;
 
       expect(result.content).toBeDefined();
@@ -538,8 +538,8 @@ describe("New Tools Tests", () => {
       const result = (await client.callTool({
         name: "execute_tool",
         arguments: {
-          toolName: "get_server_info",
-          params: { guildId: "123456789" },
+          tool_name: "get_server_info",
+          arguments: { guildId: "123456789" },
         },
       })) as ToolResult;
 
@@ -554,8 +554,8 @@ describe("New Tools Tests", () => {
       const result = (await client.callTool({
         name: "execute_tool",
         arguments: {
-          toolName: "get_message",
-          params: { channelId: "chan-123", messageId: "msg-456" },
+          tool_name: "get_message",
+          arguments: { channelId: "chan-123", messageId: "msg-456" },
         },
       })) as ToolResult;
 
@@ -568,8 +568,8 @@ describe("New Tools Tests", () => {
       const result = (await client.callTool({
         name: "execute_tool",
         arguments: {
-          toolName: "reply_to_message",
-          params: {
+          tool_name: "reply_to_message",
+          arguments: {
             channelId: "chan-123",
             messageId: "msg-456",
             content: "This is a reply",
@@ -586,8 +586,8 @@ describe("New Tools Tests", () => {
       const result = (await client.callTool({
         name: "execute_tool",
         arguments: {
-          toolName: "search_messages",
-          params: { channelId: "chan-123", query: "hello" },
+          tool_name: "search_messages",
+          arguments: { channelId: "chan-123", query: "hello" },
         },
       })) as ToolResult;
 
