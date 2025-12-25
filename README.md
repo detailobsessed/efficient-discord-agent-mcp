@@ -1,5 +1,6 @@
 # Efficient Discord Agent MCP
 
+[![npm version](https://img.shields.io/npm/v/efficient-discord-mcp-server.svg)](https://www.npmjs.com/package/efficient-discord-mcp-server)
 [![CI](https://github.com/detailobsessed/efficient-discord-agent-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/detailobsessed/efficient-discord-agent-mcp/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Bun](https://img.shields.io/badge/Bun-1.0+-f9f1e1?logo=bun&logoColor=f9f1e1)](https://bun.sh/)
@@ -8,7 +9,7 @@
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.0-3178C6?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
 [![Biome](https://img.shields.io/badge/Biome-Strict-60A5FA?logo=biome&logoColor=white)](https://biomejs.dev/)
 
-**Token-Efficient Discord Server Management** — An enhanced fork of [aj-geddes/discord-agent-mcp](https://github.com/aj-geddes/discord-agent-mcp) with significant improvements in code quality, testing, and developer experience.
+**Token-Efficient Discord Server Management** — An enhanced fork of [aj-geddes/discord-agent-mcp](https://github.com/aj-geddes/discord-agent-mcp) with progressive disclosure pattern for dramatic token savings.
 
 ## What's Different From Upstream?
 
@@ -17,21 +18,25 @@ This fork builds on the original progressive disclosure concept with substantial
 | Area | Upstream | This Fork |
 |------|----------|-----------|
 | **Runtime** | Node.js + npm | Bun (faster builds, native TypeScript) |
-| **Testing** | None | Comprehensive test suite with high coverage |
+| **Tool Exposure** | 68+ tools directly | 5 meta-tools (progressive disclosure) |
+| **Testing** | None | Comprehensive test suite |
 | **Linting** | Basic | Strict Biome rules (`noExplicitAny`, `noNonNullAssertion`, cognitive complexity) |
-| **Error Handling** | Basic | Custom error classes with typed properties |
-| **MCP Features** | Tools only | Tools + Prompts + Resources + Tool Annotations |
-| **CI/CD** | None | GitHub Actions (lint, build, test) |
+| **CI/CD** | None | GitHub Actions (lint, build, test, semantic-release) |
 | **Pre-commit** | None | prek hooks (typos, formatting, build verification) |
 
 ### Key Improvements
 
-- **Comprehensive Test Suite** — All meta-tools, registry operations, and error utilities tested; striving for high coverage
+- **Progressive Disclosure** — 5 meta-tools instead of 68+ individual tools (~90% token reduction)
+- **MCP Protocol Logging** — Structured logs sent to LLM clients for agent observability
+- **HTTP Transport Security** — DNS rebinding protection, configurable allowed hosts/origins
+- **Comprehensive Test Suite** — All meta-tools, registry operations, and error utilities tested
 - **Type-Safe Error Handling** — `ChannelNotFoundError`, `GuildNotFoundError`, `PermissionDeniedError`, `InvalidInputError` with typed properties
 - **MCP Tool Annotations** — `readOnlyHint`, `destructiveHint`, `idempotentHint`, `openWorldHint` for better LLM guidance
 - **Interactive Prompts** — Pre-built prompts for moderation, server setup, events, and permissions
 - **Guild Resources** — Expose server info as MCP resources
 - **Strict Code Quality** — Zero `any` types, no non-null assertions, enforced cognitive complexity limits
+- **Modern Tooling** — Bun for fast builds, Biome for linting, prek for pre-commit hooks
+- **Automated Releases** — Semantic versioning with conventional commits
 
 ---
 
@@ -91,40 +96,95 @@ All Discord operations organized by category:
 
 ### Prerequisites
 
-- [Bun](https://bun.sh/) 1.0.0+
+- Node.js 18+ (for `npx`) or [Bun](https://bun.sh/) 1.0+ (for `bunx`)
 - A Discord bot token ([Create one here](https://discord.com/developers/applications))
 
-### Install
+### MCP Client Configuration
+
+Add this to your MCP client configuration (e.g., `~/.config/claude/claude_desktop_config.json` for Claude Desktop, or your IDE's MCP settings):
+
+```json
+{
+  "mcpServers": {
+    "discord": {
+      "command": "npx",
+      "args": ["efficient-discord-mcp-server"],
+      "env": {
+        "DISCORD_TOKEN": "your_bot_token_here"
+      }
+    }
+  }
+}
+```
+
+Or with Bun:
+
+```json
+{
+  "mcpServers": {
+    "discord": {
+      "command": "bunx",
+      "args": ["efficient-discord-mcp-server"],
+      "env": {
+        "DISCORD_TOKEN": "your_bot_token_here"
+      }
+    }
+  }
+}
+```
+
+### Connect via CLI
+
+```bash
+# stdio transport (default)
+claude mcp add discord-agent -- npx efficient-discord-mcp-server
+
+# HTTP transport (requires running from source)
+STREAMABLE_HTTP=true npx efficient-discord-mcp-server
+claude mcp add --transport http discord-agent http://localhost:3000/mcp
+```
+
+### Install from Source (Development)
 
 ```bash
 git clone https://github.com/detailobsessed/efficient-discord-agent-mcp.git
 cd efficient-discord-agent-mcp
 bun install
-```
-
-### Configure
-
-```bash
-cp .env.example .env
-# Edit .env and add your DISCORD_TOKEN
-```
-
-### Run
-
-```bash
 bun run build
 bun start
 ```
 
-### Connect to Claude Code
+---
+
+## Features
+
+### MCP Protocol Logging
+
+The server supports MCP protocol logging for agent observability. When connected, LLM clients can receive structured log messages showing what the server is doing:
+
+- Tool execution logs
+- Discord API call details
+- Error information with context
+
+This helps agents understand server behavior and debug issues.
+
+### HTTP Transport Security
+
+When using HTTP transport (`STREAMABLE_HTTP=true`), the server includes security features:
+
+| Environment Variable | Default | Description |
+|---------------------|---------|-------------|
+| `HTTP_ALLOWED_HOSTS` | `localhost,127.0.0.1` | Comma-separated list of allowed Host headers |
+| `HTTP_ALLOWED_ORIGINS` | (any) | Comma-separated list of allowed Origin headers |
+| `HTTP_ENABLE_DNS_REBINDING_PROTECTION` | `true` | Enable DNS rebinding attack protection |
+
+Example for production:
 
 ```bash
-# stdio transport (default)
-claude mcp add discord-agent -- bun /path/to/efficient-discord-agent-mcp/dist/index.js
-
-# HTTP transport
-TRANSPORT_MODE=http bun start
-claude mcp add --transport http discord-agent http://localhost:3000/mcp
+HTTP_ALLOWED_HOSTS=api.example.com,localhost \
+HTTP_ALLOWED_ORIGINS=https://app.example.com \
+STREAMABLE_HTTP=true \
+bun start
 ```
 
 ---
@@ -147,45 +207,16 @@ bun run build
 
 ---
 
-## Deployment
-
-### Docker
-
-```bash
-docker build -t efficient-discord-mcp:latest .
-docker run -d -p 3000:3000 -e DISCORD_TOKEN=your_token efficient-discord-mcp:latest
-```
-
-### Docker Compose
-
-```yaml
-services:
-  discord-mcp:
-    build: .
-    ports:
-      - "3000:3000"
-    environment:
-      - DISCORD_TOKEN=${DISCORD_TOKEN}
-      - TRANSPORT_MODE=http
-    restart: unless-stopped
-```
-
-### Kubernetes
-
-```bash
-kubectl apply -f k8s/
-```
-
----
-
 ## Configuration
 
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
 | `DISCORD_TOKEN` | **Yes** | - | Discord bot token |
-| `TRANSPORT_MODE` | No | `stdio` | `http` or `stdio` |
-| `HTTP_PORT` | No | `3000` | Server port (HTTP mode) |
+| `STREAMABLE_HTTP` | No | `false` | Enable HTTP transport |
+| `PORT` | No | `3000` | Server port (HTTP mode) |
 | `LOG_LEVEL` | No | `info` | `debug`, `info`, `warn`, `error` |
+| `HTTP_ALLOWED_HOSTS` | No | `localhost,127.0.0.1` | Allowed Host headers |
+| `HTTP_ALLOWED_ORIGINS` | No | (any) | Allowed Origin headers |
 
 ---
 

@@ -6,7 +6,7 @@
  */
 
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { z } from "zod";
+import { z } from "zod/v3";
 import type { Logger } from "../utils/logger.js";
 import type { ToolRegistry } from "./tool-registry.js";
 
@@ -18,8 +18,8 @@ export function registerMetaTools(server: McpServer, registry: ToolRegistry, log
       title: "List Tool Categories",
       description:
         "List all available Discord tool categories. Start here to discover what operations are available.",
-      inputSchema: {},
-      outputSchema: {
+      inputSchema: z.object({}),
+      outputSchema: z.object({
         categories: z.array(
           z.object({
             name: z.string(),
@@ -27,7 +27,7 @@ export function registerMetaTools(server: McpServer, registry: ToolRegistry, log
             toolCount: z.number(),
           }),
         ),
-      },
+      }),
       annotations: {
         title: "List Tool Categories",
         readOnlyHint: true,
@@ -37,6 +37,7 @@ export function registerMetaTools(server: McpServer, registry: ToolRegistry, log
       },
     },
     async () => {
+      logger.info("Listing categories");
       const categories = registry.listCategories();
 
       logger.info("Listed categories", { count: categories.length });
@@ -59,26 +60,23 @@ export function registerMetaTools(server: McpServer, registry: ToolRegistry, log
     {
       title: "List Tools in Category",
       description:
-        "List all tools available in a specific category. Use list_categories first to see available categories.",
-      inputSchema: {
-        category: z
-          .string()
-          .describe("Category name (e.g., 'messaging', 'channels', 'moderation')"),
-      },
-      outputSchema: {
+        "List all available tools in a specific category. Use after list_categories to choose a category.",
+      inputSchema: z.object({
+        category: z.string().describe("Category name from list_categories"),
+      }),
+      outputSchema: z.object({
         tools: z.array(
           z.object({
             name: z.string(),
             description: z.string(),
           }),
         ),
-      },
+      }),
       annotations: {
         title: "List Tools in Category",
         readOnlyHint: true,
         destructiveHint: false,
         idempotentHint: true,
-        openWorldHint: false,
       },
     },
     async ({ category }) => {
@@ -121,19 +119,20 @@ export function registerMetaTools(server: McpServer, registry: ToolRegistry, log
     {
       title: "Search Tools",
       description:
-        "Search for tools by keyword across all categories. Useful when you know what you want to do but not which category it's in.",
-      inputSchema: {
-        query: z.string().describe("Search term (e.g., 'ban', 'message', 'channel')"),
-        limit: z.number().int().min(1).max(50).default(20).describe("Maximum results to return"),
-      },
-      outputSchema: {
+        "Search for tools by name or description. Useful for finding specific functionality.",
+      inputSchema: z.object({
+        query: z.string().describe("Search query - matches tool names and descriptions"),
+        limit: z.number().optional().describe("Maximum number of results to return"),
+      }),
+      outputSchema: z.object({
         tools: z.array(
           z.object({
             name: z.string(),
             description: z.string(),
+            category: z.string(),
           }),
         ),
-      },
+      }),
       annotations: {
         title: "Search Tools",
         readOnlyHint: true,
@@ -177,42 +176,41 @@ export function registerMetaTools(server: McpServer, registry: ToolRegistry, log
     {
       title: "Get Tool Schema",
       description:
-        "Get the full input/output schema for a specific tool. Use this before calling execute_tool to understand required parameters.",
-      inputSchema: {
-        toolName: z.string().describe("Tool name (e.g., 'send_message', 'ban_member')"),
-      },
-      outputSchema: {
+        "Get the input schema for a specific tool. Use this to understand what parameters a tool requires.",
+      inputSchema: z.object({
+        tool_name: z.string().describe("Name of the tool to get schema for"),
+      }),
+      outputSchema: z.object({
         name: z.string(),
         title: z.string(),
         description: z.string(),
         category: z.string(),
-        inputSchema: z.record(z.unknown()),
-        outputSchema: z.record(z.unknown()),
-      },
+        inputSchema: z.record(z.any()),
+        outputSchema: z.record(z.any()),
+      }),
       annotations: {
         title: "Get Tool Schema",
         readOnlyHint: true,
         destructiveHint: false,
         idempotentHint: true,
-        openWorldHint: false,
       },
     },
-    async ({ toolName }) => {
-      const schema = registry.getToolSchema(toolName as string);
+    async ({ tool_name }) => {
+      const schema = registry.getToolSchema(tool_name as string);
 
       if (!schema) {
         return {
           content: [
             {
               type: "text" as const,
-              text: `Tool '${toolName}' not found. Use search_tools or list_tools to find valid tool names.`,
+              text: `Tool '${tool_name}' not found. Use search_tools or list_tools to find valid tool names.`,
             },
           ],
           isError: true,
         };
       }
 
-      logger.info("Got tool schema", { toolName });
+      logger.info("Got tool schema", { tool_name });
 
       // Serialize Zod schemas to JSON-compatible format
       const serializedInput = registry.serializeSchema(schema.inputSchema);
@@ -242,48 +240,50 @@ export function registerMetaTools(server: McpServer, registry: ToolRegistry, log
   server.registerTool(
     "execute_tool",
     {
-      title: "Execute Discord Tool",
+      title: "Execute Tool",
       description:
-        "Execute a Discord tool by name with the provided parameters. Use get_tool_schema first to see required parameters.",
-      inputSchema: {
-        toolName: z.string().describe("Tool name to execute"),
-        params: z.record(z.unknown()).default({}).describe("Tool parameters as key-value pairs"),
-      },
+        "Execute any tool by name with parameters. This is the actual execution interface after discovery.",
+      inputSchema: z.object({
+        tool_name: z.string().describe("Name of the tool to execute"),
+        arguments: z
+          .record(z.any())
+          .describe("Parameters for the tool (use get_tool_schema to see required fields)"),
+      }),
       annotations: {
-        title: "Execute Discord Tool",
+        title: "Execute Tool",
         readOnlyHint: false,
         destructiveHint: true,
         idempotentHint: false,
         openWorldHint: true,
       },
     },
-    async ({ toolName, params }) => {
-      const handler = registry.getHandler(toolName as string);
+    async ({ tool_name, arguments: params }) => {
+      const handler = registry.getHandler(tool_name as string);
 
       if (!handler) {
         return {
           content: [
             {
               type: "text" as const,
-              text: `Tool '${toolName}' not found. Use search_tools or list_tools to find valid tool names.`,
+              text: `Tool '${tool_name}' not found. Use search_tools or list_tools to find valid tool names.`,
             },
           ],
           structuredContent: {
             success: false,
-            error: `Tool '${toolName}' not found`,
+            error: `Tool '${tool_name}' not found`,
           },
           isError: true,
         };
       }
 
-      logger.info("Executing tool", { toolName, params });
+      logger.info("Executing tool", { tool_name, params });
 
       try {
         const result = await handler(params as Record<string, unknown>);
         return result;
       } catch (error) {
         logger.error("Tool execution failed", {
-          toolName,
+          tool_name,
           error: error.message,
         });
 
